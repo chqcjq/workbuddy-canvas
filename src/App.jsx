@@ -51,6 +51,7 @@ import {
   enqueueGenerationTask,
   setQueueExecutor,
   setQueueInserter,
+  setQueueInserterAll,
   TaskQueuePanel
 } from './features/TaskQueue.jsx'
 
@@ -851,7 +852,7 @@ function CowartRegenerateButton() {
     const refAssetSrc = selectedImage.asset?.props?.src ?? null
     const promptText = prompt.trim()
     const provider = getStoredImageProvider()
-    const providerLabel = IMAGE_PROVIDER_OPTIONS.find((o) => o.value === provider)?.label || provider
+    const providerLabel = IMAGE_PROVIDER_OPTIONS.find((o) => o.id === provider)?.label || provider
     const genParams = buildGenParams(provider, gen)
     const pageId = editor.getCurrentPageId()
 
@@ -1377,6 +1378,9 @@ function CowartQueueBridge() {
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`)
 
         if (result.candidates && result.candidates.length > 1) {
+          // Insert all candidates now; return them so the queue panel can show
+          // the "已插入 N 张" preview.
+          await insertAllQueueCandidates(editor, task, result.candidates)
           return { ok: true, candidates: result.candidates }
         }
 
@@ -1391,9 +1395,14 @@ function CowartQueueBridge() {
       insertQueueResult(editor, task, candidate)
     })
 
+    setQueueInserterAll((task, candidates) => {
+      insertAllQueueCandidates(editor, task, candidates)
+    })
+
     return () => {
       setQueueExecutor(null)
       setQueueInserter(null)
+      setQueueInserterAll(null)
     }
   }, [editor])
 
@@ -1412,6 +1421,151 @@ async function insertQueueResult(editor, task, result) {
   await insertGeneratedImageFromResult(editor, result, task.anchorShapeId, task.prompt, task.referenceShapeId)
 }
 
+// Insert ALL generated candidates onto the canvas, laid out in a horizontal row.
+// - image-to-image: arranged to the right of the reference shape, each linked
+//   back to the source via a reference annotation arrow.
+// - text-to-image: arranged centered at the current viewport, read from left.
+async function insertAllQueueCandidates(editor, task, candidates) {
+  if (!candidates || candidates.length === 0) return
+
+  // --- image-to-image: row to the right of the reference shape ---
+  if (task.type === 'image' && task.referenceShapeId) {
+    const refShape = editor.getShape(task.referenceShapeId)
+    if (refShape) {
+      const displayW = refShape.props.w
+      const displayH = refShape.props.h
+      const gap = 40
+      for (let i = 0; i < candidates.length; i++) {
+        const cand = candidates[i]
+        const assetId = `asset:regen_${Date.now()}_${i}`
+        const shapeId = createShapeId()
+        const newAsset = {
+          id: assetId,
+          type: 'image',
+          typeName: 'asset',
+          props: {
+            name: cand.fileName,
+            src: cand.src,
+            w: displayW,
+            h: displayH,
+            fileSize: cand.fileSize,
+            mimeType: cand.mimeType,
+            isAnimated: false
+          },
+          meta: {}
+        }
+        const newShape = {
+          id: shapeId,
+          type: 'image',
+          typeName: 'shape',
+          x: refShape.x + displayW + 60 + i * (displayW + gap),
+          y: refShape.y,
+          rotation: 0,
+          isLocked: false,
+          opacity: 1,
+          parentId: refShape.parentId,
+          props: {
+            w: displayW,
+            h: displayH,
+            assetId,
+            playing: true,
+            url: '',
+            crop: null,
+            flipX: false,
+            flipY: false,
+            altText: task.prompt || ''
+          },
+          meta: {
+            cowartGeneratedStandalone: true,
+            cowartRegeneratedFrom: refShape.id
+          },
+          index: 'a0'
+        }
+        editor.store.put([newAsset, newShape])
+        connectReferenceArrow(editor, refShape.id, shapeId)
+        if (i === candidates.length - 1) editor.setSelectedShapes([shapeId])
+      }
+      return
+    }
+  }
+
+  // --- text-to-image (or image without a live reference): centered row ---
+  const infos = await Promise.all(
+    candidates.map(
+      (c) =>
+        new Promise((resolve) => {
+          const img = new Image()
+          img.onload = () => resolve({ w: img.naturalWidth || 512, h: img.naturalHeight || 512 })
+          img.onerror = () => resolve({ w: 512, h: 512 })
+          img.src = c.src
+        })
+    )
+  )
+
+  const maxDim = 640
+  const gap = 30
+  const sizes = infos.map((n) => {
+    const scale = Math.min(maxDim / n.w, maxDim / n.h, 1)
+    return { w: n.w * scale, h: n.h * scale }
+  })
+  const totalW = sizes.reduce((s, sz) => s + sz.w, 0) + gap * (candidates.length - 1)
+  const center = editor.getViewportPageBounds().center
+  let x = center.x - totalW / 2
+  const y = center.y - (sizes[0]?.h || maxDim) / 2
+
+  for (let i = 0; i < candidates.length; i++) {
+    const cand = candidates[i]
+    const sz = sizes[i]
+    const assetId = `asset:gen_${Date.now()}_${i}`
+    const shapeId = createShapeId()
+    const newAsset = {
+      id: assetId,
+      type: 'image',
+      typeName: 'asset',
+      props: {
+        name: cand.fileName,
+        src: cand.src,
+        w: sz.w,
+        h: sz.h,
+        fileSize: cand.fileSize,
+        mimeType: cand.mimeType,
+        isAnimated: false
+      },
+      meta: {}
+    }
+    const newShape = {
+      id: shapeId,
+      type: 'image',
+      typeName: 'shape',
+      x,
+      y,
+      rotation: 0,
+      isLocked: false,
+      opacity: 1,
+      parentId: editor.getCurrentPageId(),
+      props: {
+        w: sz.w,
+        h: sz.h,
+        assetId,
+        playing: true,
+        url: '',
+        crop: null,
+        flipX: false,
+        flipY: false,
+        altText: task.prompt || ''
+      },
+      meta: {
+        cowartGeneratedStandalone: true
+      },
+      index: 'a0'
+    }
+    editor.store.put([newAsset, newShape])
+    connectReferenceArrow(editor, task.referenceShapeId, shapeId)
+    x += sz.w + gap
+    if (i === candidates.length - 1) editor.setSelectedShapes([shapeId])
+  }
+}
+
 function CowartTextToImageDialog() {
   const editor = useEditor()
   const [open, setOpen] = useState(false)
@@ -1422,6 +1576,8 @@ function CowartTextToImageDialog() {
   const [count, setCount] = useState(1)
   const [templateName, setTemplateName] = useState(null)
   const [templateNeedsRef, setTemplateNeedsRef] = useState(false)
+  const [uploadedRef, setUploadedRef] = useState(null) // { src, name } from a user-uploaded reference photo
+  const fileInputRef = useRef(null)
   const openGuardRef = useRef(false)
 
   useEffect(() => {
@@ -1431,6 +1587,7 @@ function CowartTextToImageDialog() {
       setPrompt(detail.prompt && typeof detail.prompt === 'string' ? detail.prompt : '')
       setTemplateName(detail.templateName || null)
       setTemplateNeedsRef(!!detail.needUpload)
+      setUploadedRef(null)
       setGen(defaultGenState(getStoredImageProvider()))
       setError(null)
       setOpen(true)
@@ -1462,22 +1619,79 @@ function CowartTextToImageDialog() {
     const promptText = prompt.trim()
     const anchorId = anchorShapeId
 
-    // If a single image shape is selected, use it as the reference image
-    // (enables image-to-image for templates that need a product photo).
+    // Reference image priority:
+    //   1. a photo explicitly uploaded inside the dialog (templates that need a photo)
+    //   2. a single image shape selected on the canvas
+    // For an uploaded photo we materialize it as a real canvas shape so the
+    // result can be placed beside it with a reference arrow — i.e. the full
+    // image-to-image (图生图) path, not the plain text-to-image layout.
     let referenceAssetSrc = null
     let referenceShapeId = null
-    const selIds = editor.getSelectedShapeIds()
-    if (selIds.length === 1) {
-      const sh = editor.getShape(selIds[0])
-      if (sh && sh.type === 'image') {
-        const asset = sh.props?.assetId ? editor.getAsset(sh.props.assetId) : null
-        referenceAssetSrc = asset?.props?.src ?? null
-        referenceShapeId = sh.id
+    if (uploadedRef && uploadedRef.src) {
+      const nat = { w: uploadedRef.w || 512, h: uploadedRef.h || 512 }
+      const maxDim = 360
+      const scale = Math.min(maxDim / nat.w, maxDim / nat.h, 1)
+      const w = Math.round(nat.w * scale)
+      const h = Math.round(nat.h * scale)
+      const center = editor.getViewportPageBounds().center
+      const refAssetId = `asset:refupload_${Date.now()}`
+      const refShapeId = createShapeId()
+      const refAsset = {
+        id: refAssetId,
+        type: 'image',
+        typeName: 'asset',
+        props: {
+          name: uploadedRef.name || 'reference',
+          src: uploadedRef.src,
+          w: nat.w,
+          h: nat.h,
+          fileSize: 0,
+          mimeType: (uploadedRef.src.split(';')[0].split(':')[1]) || 'image/png',
+          isAnimated: false
+        },
+        meta: {}
+      }
+      const refShape = {
+        id: refShapeId,
+        type: 'image',
+        typeName: 'shape',
+        x: center.x - w / 2,
+        y: center.y - h / 2,
+        rotation: 0,
+        isLocked: false,
+        opacity: 1,
+        parentId: editor.getCurrentPageId(),
+        props: {
+          w,
+          h,
+          assetId: refAssetId,
+          playing: true,
+          url: '',
+          crop: null,
+          flipX: false,
+          flipY: false,
+          altText: '参考图（用户上传）'
+        },
+        meta: { cowartReferenceUpload: true },
+        index: 'a0'
+      }
+      editor.store.put([refAsset, refShape])
+      referenceAssetSrc = uploadedRef.src
+      referenceShapeId = refShapeId
+    } else {
+      const selIds = editor.getSelectedShapeIds()
+      if (selIds.length === 1) {
+        const sh = editor.getShape(selIds[0])
+        if (sh && sh.type === 'image') {
+          const asset = sh.props?.assetId ? editor.getAsset(sh.props.assetId) : null
+          referenceAssetSrc = asset?.props?.src ?? null
+          referenceShapeId = sh.id
+        }
       }
     }
 
     const provider = getStoredImageProvider()
-    const providerLabel = IMAGE_PROVIDER_OPTIONS.find((o) => o.value === provider)?.label || provider
+    const providerLabel = IMAGE_PROVIDER_OPTIONS.find((o) => o.id === provider)?.label || provider
     const genParams = buildGenParams(provider, gen)
     const pageId = editor.getCurrentPageId()
 
@@ -1500,7 +1714,7 @@ function CowartTextToImageDialog() {
       return
     }
     setOpen(false)
-  }, [prompt, gen, anchorShapeId, editor, count])
+  }, [prompt, gen, anchorShapeId, editor, count, uploadedRef])
 
   return (
     <>
@@ -1523,9 +1737,57 @@ function CowartTextToImageDialog() {
                   >×</button>
                 </div>
               ) : null}
-              {templateNeedsRef && !hasRefImage ? (
-                <div className="cowart-textgen-refhint">
-                  💡 该模板建议先在画布选中一张参考图（如商品照片），生成时会自动作为参考；不选也可直接生成。
+              {templateNeedsRef ? (
+                <div className="cowart-textgen-refbox">
+                  <div className="cowart-textgen-refhint">
+                    {uploadedRef ? (
+                      <span>✅ 已上传参考图：{uploadedRef.name}（走图生图路径，参考图将放入画布，生成结果排在右侧并连标注线）</span>
+                    ) : hasRefImage ? (
+                      <span>✅ 已选中画布上的图片，将作为图生图输入。</span>
+                    ) : (
+                      <span>💡 该模板需要一张参考照片：点击下方「上传图片」选择本地照片，或在画布中选中一张图片，生成时会作为图生图输入；不选也可直接生成。</span>
+                    )}
+                  </div>
+                  <div className="cowart-textgen-refupload">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const file = e.target.files && e.target.files[0]
+                        if (!file) return
+                        const reader = new FileReader()
+                        reader.onload = () => {
+                          const dataUrl = String(reader.result)
+                          const img = new Image()
+                          img.onload = () => setUploadedRef({ src: dataUrl, name: file.name, w: img.naturalWidth || 512, h: img.naturalHeight || 512 })
+                          img.onerror = () => setUploadedRef({ src: dataUrl, name: file.name, w: 512, h: 512 })
+                          img.src = dataUrl
+                        }
+                        reader.readAsDataURL(file)
+                        e.target.value = ''
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="cowart-textgen-upload-btn"
+                      onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                    >
+                      📷 上传图片
+                    </button>
+                    {uploadedRef ? (
+                      <div className="cowart-textgen-refpreview">
+                        <img src={uploadedRef.src} alt="参考图预览" />
+                        <button
+                          type="button"
+                          className="cowart-textgen-refremove"
+                          onClick={() => setUploadedRef(null)}
+                          title="移除上传的参考图"
+                        >移除</button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
               <textarea

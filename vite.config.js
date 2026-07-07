@@ -732,7 +732,7 @@ function canvasStoragePlugin() {
           fileSize,
           mimeType: imgMimeType,
           taskId,
-          usedReference: referenceUrl !== null,
+          usedReference: referenceUrl !== null || referenceDataUri !== null,
           referenceUrl
         }
       }
@@ -873,7 +873,7 @@ function canvasStoragePlugin() {
           fileSize,
           mimeType,
           taskId,
-          usedReference: referenceUrl !== null,
+          usedReference: referenceUrl !== null || referenceDataUri !== null,
           referenceUrl
         }
       }
@@ -905,36 +905,42 @@ function canvasStoragePlugin() {
           let referenceDataUri = null
 
           if (referenceAssetSrc && typeof referenceAssetSrc === 'string') {
-            const filePath = localAssetFilePathFromUrl(referenceAssetSrc)
-            if (filePath) {
-              const fileBuffer = await readFile(filePath)
-              const mimeType = mimeTypes.get(extname(filePath).toLowerCase()) || 'image/png'
-              referenceDataUri = `data:${mimeType};base64,${fileBuffer.toString('base64')}`
+            if (referenceAssetSrc.startsWith('data:')) {
+              // A data URL (e.g. a photo uploaded directly in the dialog, or a
+              // canvas image whose asset src is a data URL) is used as-is.
+              referenceDataUri = referenceAssetSrc
+            } else {
+              const filePath = localAssetFilePathFromUrl(referenceAssetSrc)
+              if (filePath) {
+                const fileBuffer = await readFile(filePath)
+                const mimeType = mimeTypes.get(extname(filePath).toLowerCase()) || 'image/png'
+                referenceDataUri = `data:${mimeType};base64,${fileBuffer.toString('base64')}`
 
-              if (cos && cos.secretId && cos.secretKey && COS) {
-                try {
-                  const cosClient = new COS({
-                    SecretId: cos.secretId,
-                    SecretKey: cos.secretKey
-                  })
-                  const cosKey = `cowart-ref/${Date.now()}-${basename(filePath)}`
-                  const cosBucket = cos.bucket || 'zip-1301894149'
-                  const cosRegion = cos.region || 'ap-shanghai'
-                  const cosDomain = (cos.domain || 'https://zip-1301894149.cos.ap-shanghai.myqcloud.com').replace(/\/+$/, '')
+                if (cos && cos.secretId && cos.secretKey && COS) {
+                  try {
+                    const cosClient = new COS({
+                      SecretId: cos.secretId,
+                      SecretKey: cos.secretKey
+                    })
+                    const cosKey = `cowart-ref/${Date.now()}-${basename(filePath)}`
+                    const cosBucket = cos.bucket || 'zip-1301894149'
+                    const cosRegion = cos.region || 'ap-shanghai'
+                    const cosDomain = (cos.domain || 'https://zip-1301894149.cos.ap-shanghai.myqcloud.com').replace(/\/+$/, '')
 
-                  await new Promise((resolve, reject) => {
-                    cosClient.putObject({
-                      Bucket: cosBucket,
-                      Region: cosRegion,
-                      Key: cosKey,
-                      Body: fileBuffer,
-                      ContentType: mimeType
-                    }, (err) => err ? reject(err) : resolve())
-                  })
+                    await new Promise((resolve, reject) => {
+                      cosClient.putObject({
+                        Bucket: cosBucket,
+                        Region: cosRegion,
+                        Key: cosKey,
+                        Body: fileBuffer,
+                        ContentType: mimeType
+                      }, (err) => err ? reject(err) : resolve())
+                    })
 
-                  referenceUrl = `${cosDomain}/${cosKey}`
-                } catch (cosErr) {
-                  console.error('COS upload failed:', cosErr.message)
+                    referenceUrl = `${cosDomain}/${cosKey}`
+                  } catch (cosErr) {
+                    console.error('COS upload failed:', cosErr.message)
+                  }
                 }
               }
             }
@@ -961,7 +967,7 @@ function canvasStoragePlugin() {
             fileSize: primary.fileSize,
             mimeType: primary.mimeType,
             taskId: primary.taskId,
-            usedReference: referenceUrl !== null
+            usedReference: referenceUrl !== null || referenceDataUri !== null
           })
         } catch (error) {
           sendJson(res, 500, { error: error.message })

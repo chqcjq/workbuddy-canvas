@@ -686,6 +686,55 @@ body {
   font-size: 12px;
   line-height: 1.5;
 }
+.cowart-textgen-refbox {
+  display: grid;
+  gap: 8px;
+}
+.cowart-textgen-refupload {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cowart-textgen-upload-btn {
+  height: 36px;
+  padding: 0 16px;
+  border: 1px dashed #6366f1;
+  border-radius: 8px;
+  background: #f5f3ff;
+  color: #4338ca;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cowart-textgen-upload-btn:hover {
+  background: #ede9fe;
+}
+.cowart-textgen-refpreview {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.cowart-textgen-refpreview img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+.cowart-textgen-refremove {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff;
+  color: #dc2626;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cowart-textgen-refremove:hover {
+  background: #fef2f2;
+}
 .cowart-textgen-modal-footer {
   display: flex;
   justify-content: flex-end;
@@ -982,6 +1031,18 @@ body {
   background: #f1f5f9;
 }
 .cowart-queue-candidate span { font-size: 10.5px; color: #64748b; }
+.cowart-queue-inserted-label {
+  font-size: 11px;
+  color: #16a34a;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.cowart-queue-inserted .cowart-queue-candidate {
+  cursor: default;
+}
+.cowart-queue-inserted .cowart-queue-candidate:hover {
+  border-color: #e5e7eb;
+}
 .cowart-queue-error { margin-top: 6px; color: #dc2626; font-size: 11.5px; }
 .cowart-queue-actions {
   margin-top: 7px;

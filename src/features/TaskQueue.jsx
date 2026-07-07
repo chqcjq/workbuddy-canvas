@@ -21,6 +21,7 @@ const listeners = new Set()
 let running = 0
 let executor = null // async (task) => { ok:true, candidates?:[] } | { ok:false, error }
 let inserter = null // (task, candidate) => void
+let inserterAll = null // (task, candidates[]) => void  批量插入（多张图全部落画布）
 
 function emit() {
   const snapshot = tasks.slice()
@@ -53,6 +54,10 @@ export function setQueueInserter(fn) {
   inserter = fn
 }
 
+export function setQueueInserterAll(fn) {
+  inserterAll = fn
+}
+
 /**
  * 提交一个生成任务。
  * @param {object} data
@@ -68,7 +73,7 @@ export function enqueueGenerationTask(data) {
   const id = 'q_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)
   const task = {
     id,
-    status: 'queued', // queued | running | needs_choice | done | error
+    status: 'queued', // queued | running | done | error
     createdAt: Date.now(),
     startedAt: null,
     finishedAt: null,
@@ -100,30 +105,31 @@ async function pump() {
     const res = await executor(next)
     if (!res || !res.ok) throw new Error(res?.error || '执行失败')
 
+    // 多张图：全部自动插入画布，状态直接置为完成（候选图保留用于预览）。
     if (res.candidates && res.candidates.length > 1) {
-      patchTask(next.id, { status: 'needs_choice', candidates: res.candidates, progress: 100 })
+      if (!inserterAll) throw new Error('批量插入器未初始化')
+      inserterAll(next, res.candidates)
+      patchTask(next.id, {
+        status: 'done',
+        candidates: res.candidates,
+        insertedAll: true,
+        progress: 100,
+        finishedAt: Date.now()
+      })
     } else {
-      patchTask(next.id, { status: 'done', progress: 100, finishedAt: Date.now() })
+      patchTask(next.id, {
+        status: 'done',
+        progress: 100,
+        finishedAt: Date.now(),
+        candidates: res.candidates || null,
+        insertedAll: !!(res.candidates && res.candidates.length > 1)
+      })
     }
   } catch (err) {
     patchTask(next.id, { status: 'error', error: err.message || '生成失败', finishedAt: Date.now() })
   } finally {
     running--
     pump()
-  }
-}
-
-/**
- * 在「需选择」状态下，用户点选某个候选图 → 插入画布并标记完成。
- */
-export function chooseQueueCandidate(id, candidate) {
-  const t = tasks.find((x) => x.id === id)
-  if (!t || t.status !== 'needs_choice') return
-  try {
-    if (inserter) inserter(t, candidate)
-    patchTask(id, { status: 'done', finishedAt: Date.now() })
-  } catch (err) {
-    patchTask(id, { status: 'error', error: err.message || '插入失败', finishedAt: Date.now() })
   }
 }
 
@@ -256,20 +262,17 @@ export function TaskQueuePanel() {
                   </div>
                 ) : null}
 
-                {t.status === 'needs_choice' && t.candidates ? (
-                  <div className="cowart-queue-candidates">
-                    {t.candidates.map((c, i) => (
-                      <button
-                        key={i}
-                        className="cowart-queue-candidate"
-                        type="button"
-                        title={`选择候选 ${i + 1}`}
-                        onClick={() => chooseQueueCandidate(t.id, c)}
-                      >
-                        <img src={c.src} alt={`候选 ${i + 1}`} />
-                        <span>候选 {i + 1}</span>
-                      </button>
-                    ))}
+                {t.status === 'done' && t.candidates && t.candidates.length > 1 && t.insertedAll ? (
+                  <div className="cowart-queue-candidates cowart-queue-inserted">
+                    <div className="cowart-queue-inserted-label">已插入 {t.candidates.length} 张</div>
+                    <div className="cowart-queue-candidates-grid">
+                      {t.candidates.map((c, i) => (
+                        <div key={i} className="cowart-queue-candidate" title={`候选 ${i + 1}`}>
+                          <img src={c.src} alt={`候选 ${i + 1}`} />
+                          <span>候选 {i + 1}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ) : null}
 
@@ -288,7 +291,7 @@ export function TaskQueuePanel() {
                       移除
                     </button>
                   ) : null}
-                  {t.status === 'done' || t.status === 'needs_choice' ? (
+                  {t.status === 'done' ? (
                     <button type="button" className="cowart-queue-remove" onClick={() => removeQueueTask(t.id)}>
                       移除
                     </button>
