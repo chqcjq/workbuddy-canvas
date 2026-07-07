@@ -75,8 +75,7 @@ const COS_DEFAULT_REGION = 'ap-shanghai'
 const COS_DEFAULT_DOMAIN = 'https://zip-1301894149.cos.ap-shanghai.myqcloud.com'
 const IMAGE_PROVIDER_OPTIONS = [
   { id: IMAGE_PROVIDER_IMAGE2, label: 'Image2' },
-  { id: IMAGE_PROVIDER_BANANA, label: 'Banana' },
-  { id: IMAGE_PROVIDER_NANO, label: 'Banana Pro' }
+  { id: IMAGE_PROVIDER_BANANA, label: 'Banana' }
 ]
 const DEFAULT_IMAGE_API_BASE_URL = 'https://duomiapi.com'
 const ANNOTATION_TOOL_ID = 'cowart-annotation'
@@ -153,6 +152,9 @@ function isValidImageProvider(value) {
 function getStoredImageProvider() {
   try {
     const value = window.localStorage.getItem(IMAGE_PROVIDER_STORAGE_KEY)
+    // Backward-compat: the old "Banana Pro" (nano) option was merged into
+    // "Banana", which now requests the pro model by default.
+    if (value === IMAGE_PROVIDER_NANO) return IMAGE_PROVIDER_BANANA
     return isValidImageProvider(value) ? value : DEFAULT_IMAGE_PROVIDER
   } catch {
     return DEFAULT_IMAGE_PROVIDER
@@ -951,8 +953,8 @@ const TEXTGEN_OPEN_EVENT = 'cowart-open-textgen'
 
 // Per-model size / quality parameter schema.
 // image2  → size field (auto / fixed / custom WxH, 16-aligned)
-// banana  → aspect_ratio + quality
-// nano    → aspect_ratio + image_size (Banana Pro)
+// banana  → aspect_ratio + image_size (requests the pro model by default)
+// nano    → alias kept for backward-compat (maps to banana/pro)
 const GEN_MODEL_SCHEMAS = {
   image2: {
     key: 'image2',
@@ -971,37 +973,21 @@ const GEN_MODEL_SCHEMAS = {
     key: 'banana',
     label: 'Banana',
     sizeMode: 'aspect',
-    aspectOptions: [
-      { value: '1:1', label: '1:1 正方形' },
-      { value: '3:2', label: '3:2 横版' },
-      { value: '2:3', label: '2:3 竖版' },
-      { value: '16:9', label: '16:9 横版' },
-      { value: '9:16', label: '9:16 竖版' }
-    ],
-    defaultAspect: '1:1',
-    qualityOptions: [
-      { value: 'low', label: 'low' },
-      { value: 'medium', label: 'medium' },
-      { value: 'high', label: 'high（默认）' }
-    ],
-    defaultQuality: 'high'
-  },
-  nano: {
-    key: 'nano',
-    label: 'Banana Pro',
-    sizeMode: 'aspect',
+    // "Banana" now requests the pro model by default, so it exposes the
+    // full aspect-ratio set and the 4K image-size selector (formerly the
+    // separate "Banana Pro" option).
     aspectOptions: [
       { value: 'auto', label: 'auto（自适应）' },
-      { value: '1:1', label: '1:1' },
-      { value: '2:3', label: '2:3' },
-      { value: '3:2', label: '3:2' },
+      { value: '1:1', label: '1:1 正方形' },
+      { value: '2:3', label: '2:3 竖版' },
+      { value: '3:2', label: '3:2 横版' },
       { value: '3:4', label: '3:4' },
       { value: '4:3', label: '4:3' },
       { value: '4:5', label: '4:5' },
       { value: '5:4', label: '5:4' },
-      { value: '9:16', label: '9:16' },
-      { value: '16:9', label: '16:9' },
-      { value: '21:9', label: '21:9' }
+      { value: '9:16', label: '9:16 竖版' },
+      { value: '16:9', label: '16:9 横版' },
+      { value: '21:9', label: '21:9 宽屏' }
     ],
     defaultAspect: 'auto',
     imageSizeOptions: [
@@ -1042,10 +1028,8 @@ function buildGenParams(provider, st) {
     }
     return { size }
   }
-  if (provider === 'banana') {
-    return { aspect_ratio: st.aspectRatio, quality: st.quality }
-  }
-  if (provider === 'nano') {
+  // "banana" requests the pro model by default → aspect_ratio + image_size.
+  if (provider === 'banana' || provider === 'nano') {
     return { aspect_ratio: st.aspectRatio, image_size: st.imageSize }
   }
   return {}
@@ -1107,19 +1091,6 @@ function GenSizeControl({ provider, gen, setGen }) {
         </label>
       )}
       {provider === 'banana' && (
-        <label className="cowart-textgen-size-field">
-          <span>质量</span>
-          <select
-            value={gen.quality}
-            onChange={(e) => setGen((g) => ({ ...g, quality: e.target.value }))}
-          >
-            {schema.qualityOptions.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </label>
-      )}
-      {provider === 'nano' && (
         <label className="cowart-textgen-size-field">
           <span>分辨率</span>
           <select

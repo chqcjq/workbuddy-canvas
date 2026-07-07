@@ -771,7 +771,7 @@ function canvasStoragePlugin() {
         return null
       }
 
-      async function generateNanoBanana({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, pageId, model }) {
+      async function generateNanoBanana({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, pageId, model, genParams }) {
         const endpoint = `${baseUrl}/api/gemini/nano-banana`
         const headers = {
           authorization: apiKey,
@@ -782,6 +782,12 @@ function canvasStoragePlugin() {
           prompt
         }
         if (size) body.size = size
+        // Forward the per-model generation params (aspect_ratio / image_size).
+        // These are best-effort: ignored by the endpoint if unsupported.
+        if (genParams && typeof genParams === 'object') {
+          if (genParams.aspect_ratio && genParams.aspect_ratio !== 'auto') body.aspect_ratio = genParams.aspect_ratio
+          if (genParams.image_size) body.image_size = genParams.image_size
+        }
         if (referenceUrl) body.image = [referenceUrl]
         else if (referenceDataUri) body.image = [referenceDataUri]
 
@@ -882,7 +888,7 @@ function canvasStoragePlugin() {
 
         try {
           const body = JSON.parse(await readRequestBody(req))
-          const { prompt, referenceAssetSrc, apiBaseUrl, apiKey, provider, pageId, size, cos, count, model } = body
+          const { prompt, referenceAssetSrc, apiBaseUrl, apiKey, provider, pageId, size, cos, count, model, genParams } = body
 
           if (!prompt || typeof prompt !== 'string') {
             sendJson(res, 400, { error: 'prompt is required.' })
@@ -935,12 +941,14 @@ function canvasStoragePlugin() {
           }
 
           const n = Math.min(Math.max(parseInt(count, 10) || 1, 1), 4)
-          const useNano = provider === 'nano'
+          // "banana" now requests the pro (Gemini) model by default; "nano"
+          // is kept only for backward-compatibility with stored tasks.
+          const useNano = provider === 'banana' || provider === 'nano'
           const candidates = await Promise.all(
             Array.from({ length: n }, () =>
               useNano
-                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, cos, pageId, model })
-                : generateOnce({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, cos, pageId })
+                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey, baseUrl, cos, pageId, model, genParams })
+                : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey, baseUrl, cos, pageId })
             )
           )
           const primary = candidates[0]
