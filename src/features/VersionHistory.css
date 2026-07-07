@@ -1,7 +1,7 @@
 .cowart-vh-trigger {
   position: fixed;
-  top: 12px;
-  right: 12px;
+  left: 8px;
+  bottom: 52px;
   z-index: 300;
   display: inline-flex;
   align-items: center;
