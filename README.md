@@ -1,166 +1,170 @@
-# Cowart for WorkBuddy
+# Cowart 画布（WorkBuddy 本地无限画布）
 
-Cowart 是一个面向 **WorkBuddy** 的本地无限画布插件。它基于 tldraw 提供可视化画布，用于构思、标注、生成图片，以及根据标注图迭代图片。画布运行在本地网页服务中，数据默认保存到当前用户项目的 `canvas/` 目录，而不是保存到插件仓库里。
+Cowart 是一个基于 **tldraw** 的本地无限画布应用，运行在本地网页服务中。它把「可视化构思 → AI 生图 → 标注迭代 → 文字/图片导出」串成一条连贯的工作流，适合做设计构思、商品图生成、海报草编、文档截图转文字等场景。
 
-> 本仓库是基于 [zhongerxin/cowart](https://github.com/zhongerxin/cowart) 的 WorkBuddy 适配版本。原版面向 Codex；本版本针对 WorkBuddy 客户端的安装路径、MCP 注册方式、信任流程做了改造。
+画布数据默认保存在用户项目目录的 `canvas/` 下，按页面分文件持久化，不会进入插件仓库。
 
-English README: 暂未翻译。
+> 本仓库是面向 WorkBuddy 客户端的适配版本，同时也可作为独立本地画布直接运行。
 
-## 功能
+---
 
-- 在 WorkBuddy 中通过 `preview_url` 打开一个本地 tldraw 无限画布。
-- 在当前项目目录中持久化画布页面和图片资源。
-- 在画布中创建 AI image holder，让 WorkBuddy 通过 `ImageGen` 生成图片并自动填入选中的 holder。
-- 上传或提供 Cowart 标注截图，让 WorkBuddy 根据标注生成干净的新图并放到原图旁边。
-- 通过 Cowart MCP 工具读取选择状态、插入图片，并保存到页面本地资源目录。
+## 功能特性
+
+### 画布与编辑
+- **无限画布**：基于 tldraw v5，支持自由绘制、文字、形状、箭头、框选、缩放、平移。
+- **按页持久化**：画布按页面拆分存储（`canvas/pages/<page-id>/cowart-canvas.json` + `assets/`），刷新/重开不丢失。
+- **小地图**：右下角实时缩略图，快速定位画布位置。
+- **智能排版**：一键把选中图形整理为网格 / 横向 / 纵向 / 紧凑布局，并自动连线。
+- **版本历史**：本地快照（localStorage），可随时保存与回溯。
+- **空白引导层**：画布为空时居中引导卡片，提示文生图 / 绘制 / 文字等入口。
+
+### AI 生图
+- **文生图对话框**：底部工具栏「✨文生图」或选中 AI 图片框时「✨生成」唤起，支持多候选（1–4 张）择优。
+- **三种生图模型**（下拉切换）：
+  - **Banana（banana pro）**：`aspect_ratio` 枚举（auto / 1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9），`image_size` 默认 4K。
+  - **Image2**：`size` 枚举（auto 由模型决定 / 1024×1024 / 1792×1024 / 1024×1792 / 自定义宽×高，要求能被 16 整除且不超限），`quality` 默认 high。
+  - **Nano Banana**：接入 Duomi 的 `gemini/nano-banana`，`model` 默认 `gemini-3-pro-image-preview`。
+- **参考图（图生图）**：提交时若画布恰好选中 1 张图片，会作为参考图传入，生成与原图相关的新图。
+- **自动标注线**：用参考图生成的新图，落图后会自动画一条**蓝色虚线箭头**连回原图（带「参考图」标签），清晰体现衍生关系；连线为 tldraw 绑定，移动图形会跟随。
+
+### 模板与提示词
+- **办公 & 电商提示词模板库**：内置 14 个高价值模板，分 3 组（电商 5 / 品牌·办公 3 / 营销海报 6）。点击模板即把提示词载入文生图对话框，占位符可编辑后再提交；需要商品主图作参考的模板会自动提示先选中图片。
+
+### 图片与文字工具
+- **粘贴即落图**：直接 `Ctrl/Cmd + V` 粘贴或拖入图片，自动落为画布图片。
+- **OCR 提取文字**：选中一张图片点「📷 提取文字」，用 tesseract.js 在浏览器本地识别中英文（无需服务端密钥）。内置预处理（白底铺满、智能放大、轻微对比增强）以提升准确率，识别结果生成可编辑文本块。
+- **标注汇总**：评审标注列表化查看，支持导出 Markdown。
+- **导出**：工具栏「📤导出」支持 PNG / SVG 下载，以及「复制为图片」到剪贴板（选中则导出选中，否则导出整页）。
+
+---
 
 ## 系统要求
 
-- macOS（推荐）/ Linux
-- WorkBuddy 客户端（已登录、已挂载默认连接器）
-- Node.js 22 及以上
-- 一个能跑 `git` 和 `bash` 的终端
+- Windows / macOS / Linux
+- Node.js 22 及以上（推荐 22.22+）
+- 现代浏览器（Chrome / Edge / Firefox 最新版）
+- 如需 AI 生图：一个 [Duomi（多米）](https://duomiapi.com) API Key
 
-## 一键安装（推荐 · WorkBuddy 用户）
+---
 
-把下面这段发给 WorkBuddy：
+## 快速开始
 
-```text
-请帮我安装 Cowart for WorkBuddy 插件，仓库地址：https://github.com/tllll64/cowart_workbuddy.git
-
-步骤：
-1. 把仓库 clone 到 ~/plugins/cowart（如果已存在则先备份再 clone）。
-2. 运行 ./scripts/install-workbuddy.sh 完成 macOS 扩展属性清理、依赖安装、MCP 注册与连接器启用。
-3. 让我知道是否需要重启 WorkBuddy 或开新对话来加载新的 skill 和 MCP 工具。
-```
-
-WorkBuddy 会自动完成全部步骤。完成后**新建一个对话**即可使用。
-
-## 手动安装
-
-```bash
-mkdir -p ~/plugins
-git clone https://github.com/tllll64/cowart_workbuddy.git ~/plugins/cowart
-cd ~/plugins/cowart
-./scripts/install-workbuddy.sh
-```
-
-`install-workbuddy.sh` 会自动完成：
-
-1. `xattr -rc .` 清除 macOS 扩展属性（解决 `EPERM: mkdir node_modules` 问题）。
-2. `npm install` 安装依赖。
-3. `npm run build` 生成 `dist/`。
-4. 在 `~/.workbuddy/mcp.json` 注册 `cowart_mcp` MCP server。
-5. 在 `~/.workbuddy/connectors/<account>/connector-states.json` 的 `enabled` 数组里加入 `cowart_mcp`，等价于"在 WorkBuddy 客户端里点信任"。
-
-### 手动验证（可选）
-
-```bash
-cat ~/.workbuddy/mcp.json | grep cowart
-cat ~/.workbuddy/connectors/*/connector-states.json | grep cowart
-```
-
-两条都能看到 `cowart_mcp` 字样即视为安装成功。
-
-### 完成后
-
-**完全退出 WorkBuddy 后重新打开**（Cmd+Q 之后再启动），或在已运行的客户端中 `/new` 开一个新对话，WorkBuddy 会自动拉起 `cowart_mcp` 并把工具注入对话上下文。
-
-## 使用
-
-### 打开画布
-
-在 WorkBuddy 中说：
-
-```text
-帮我打开 Cowart 画布。
-```
-
-WorkBuddy 会启动本地 vite 服务并通过 `preview_url` 把画布嵌入对话面板。**端口不是固定的**：默认 `43217`，被占用时 vite 会自动迁移到 `43218`、`43219`……以脚本最后输出的 `Local:` URL 为准。
-
-画布数据会保存在当前项目目录下：
-
-```text
-canvas/pages/<page-id>/cowart-canvas.json
-canvas/pages/<page-id>/assets/
-```
-
-> 📷 WorkBuddy 版截图整理中，稍后补上。
-
-### 生成新图
-
-1. 打开 Cowart 画布。
-2. 在画布里创建并选中一个 AI image holder（可选；不选也可以生成后插到当前页空白处）。
-3. 在 WorkBuddy 中描述要生成的图片，例如：
-
-```text
-帮我生成一张"水彩风格的红色苹果"，插到当前画布上。
-```
-
-WorkBuddy 会调用内置 `ImageGen` 生成图片，并通过 `insert_cowart_image` 自动插入画布。
-
-> 📷 WorkBuddy 版截图整理中，稍后补上。
-
-### 根据标注图生成新图
-
-1. 在 Cowart 画布中对图片做标注。
-2. 截图并把标注截图发给 WorkBuddy。
-3. 使用提示：
-
-```text
-根据我的 Cowart 标注截图，生成一张去掉标注痕迹的新图，放到原图旁边。
-```
-
-WorkBuddy 会读取截图里的标注和箭头，生成干净的修订图，并把结果放在原图旁边。原图和标注**不会**被删除或移动。
-
-> 📷 WorkBuddy 版截图整理中，稍后补上。
-
-## 技能
-
-- `cowart:cowart-open-canvas`：打开 Cowart 本地画布并嵌入 WorkBuddy 浏览器面板。
-- `cowart:cowart-image-gen`：把生成图片插入选中的 AI image holder（或当前页）。
-- `cowart:cowart-image-edit`：根据用户提供的 Cowart 标注截图生成修订图。
-
-## 本地开发
+### 1. 安装依赖
 
 ```bash
 npm install
-npm run dev      # 启动 vite 画布
-npm run build    # 构建 dist
 ```
 
-或直接启动画布服务并指定用户项目目录：
+> 依赖包含 `tesseract.js`（OCR，体积较大）、`cos-nodejs-sdk-v5`、`tldraw`、`react` 等，首次安装稍慢属正常。
+
+### 2. 启动画布
+
+```bash
+npm run dev
+```
+
+默认访问 **http://localhost:43217**；端口被占用时 vite 会自动迁移到 `43218`、`43219`……以终端输出的 `Local:` 实际 URL 为准。
+
+也可使用封装脚本（自动设置项目目录、处理扩展属性兜底）：
 
 ```bash
 ./scripts/start-canvas.sh /path/to/user/project
 ```
 
-启动脚本会**自动调用 `xattr -rc .` 兜底**，避免 macOS 扩展属性导致 `npm install` 失败。
+### 3. 配置生图 API Key
 
-常用环境变量：
+打开画布后，点击底部工具栏的 **「API」** 按钮，填入你的 Duomi API Key。Key 仅保存在**浏览器 localStorage**，不会写入代码或上传到任何仓库。
 
-- `COWART_PORT`：本地服务的**首选**端口，默认 `43217`。被占用时 vite 会自动迁移。
-- `COWART_PROJECT_DIR`：画布数据所属的用户项目目录。
-- `COWART_CANVAS_DIR`：画布数据目录，默认是 `$COWART_PROJECT_DIR/canvas`。
+> 不配置 Key 也能使用画布编辑、OCR、模板浏览、导出等本地功能；只有 AI 生图需要 Key。
 
-## 卸载
+---
 
-```bash
-./scripts/uninstall-workbuddy.sh
-rm -rf ~/plugins/cowart
+## 使用指南
+
+### 生成图片
+1. 点击底部「✨文生图」（或选中画布上的 AI 图片框后点「✨生成」）。
+2. 选择生图模型与尺寸/质量参数，输入提示词，可选「数量」出多张候选。
+3. 点击生成，图片异步产出后自动插入画布。
+
+### 参考图生成（图生图）
+1. 在画布中**选中 1 张图片**作为参考。
+2. 打开文生图对话框输入提示词并提交（或对该图点「重生成」）。
+3. 新图生成后会落在参考图旁，并用蓝色虚线标注线连回原图。
+
+### 使用提示词模板
+1. 点击「📋 模板库」，展开「办公 & 电商 提示词」分区。
+2. 选择模板，提示词自动载入文生图对话框（占位符可编辑）。
+3. 需要商品图的模板会提示你先选中一张图片作为参考图。
+
+### 提取图片文字（OCR）
+1. 选中一张图片。
+2. 画布左下出现「📷 提取文字」按钮，点击即可识别。
+3. 识别结果作为可编辑文本块插入图片右侧。
+
+### 版本历史
+- 左下「🕘 历史」按钮：手动保存快照、查看并回溯历史版本（存于浏览器 localStorage）。
+
+### 标注汇总与导出
+- 左下「📝 标注」按钮：查看评审标注列表，导出为 Markdown。
+- 工具栏「📤导出」：导出 PNG / SVG 或复制为图片。
+
+### 智能排版
+- 选中多个图形，使用智能排版把元素规整为网格 / 横纵 / 紧凑布局并自动连线。
+
+---
+
+## 项目结构（简要）
+
+```
+cowart/
+├─ src/
+│  ├─ App.jsx                 # 主前端：画布、对话框、落图、标注线
+│  ├─ styles.css
+│  └─ features/               # 功能模块
+│     ├─ OcrTool.jsx          # OCR 提取文字（tesseract.js）
+│     ├─ VersionHistory.jsx   # 版本历史
+│     ├─ AnnotationSummary.jsx# 标注汇总
+│     ├─ TemplateLibrary.jsx  # 提示词模板库
+│     ├─ SmartArrange.jsx     # 智能排版
+│     ├─ MinimapFeature.jsx   # 小地图
+│     ├─ PasteToImage.jsx     # 粘贴即落图
+│     └─ promptTemplates.js   # 模板数据（来自 ai-hand 提取）
+├─ vite.config.js             # vite + 本地后端（/api/regenerate、画布资源服务）
+├─ scripts/                   # 安装 / 启动 / 卸载脚本
+├─ docs/INSTALL-WORKBUDDY.md
+└─ README.md
 ```
 
-卸载脚本会把 `cowart_mcp` 从 `~/.workbuddy/mcp.json` 与 `connector-states.json` 移除。
+---
 
-## 故障排查
+## 环境变量
 
-请参考 [`docs/INSTALL-WORKBUDDY.md`](docs/INSTALL-WORKBUDDY.md) 的"常见问题"部分。
+- `COWART_PORT`：本地服务首选端口，默认 `43217`（被占用自动迁移）。
+- `COWART_PROJECT_DIR`：画布数据所属的用户项目目录。
+- `COWART_CANVAS_DIR`：画布数据目录，默认 `$COWART_PROJECT_DIR/canvas`。
 
-## 开发者
+---
 
-- 原版作者：ZHONG XIN（[https://www.jiqiren.ai](https://www.jiqiren.ai)）
-- WorkBuddy 适配：田琳 (Lynn)
+## 技术栈
+
+- **前端**：React 19、tldraw ^5.1.1、Vite ^7
+- **OCR**：tesseract.js ^7（浏览器端本地识别，中英文）
+- **后端**：Vite 中间件（`/api/regenerate` 等），Node 原生
+- **存储**：本地文件系统（按页 JSON + 资源目录）
+
+---
 
 ## 致谢
 
 Cowart 的画布能力基于 [tldraw/tldraw](https://github.com/tldraw/tldraw) 实现。
+
+WorkBuddy 的画布参考 [morningddy/cowart-workbuddy](https://github.com/morningddy/cowart-workbuddy) 实现。
+
+- 原版作者：ZHONG XIN（[https://www.jiqiren.ai](https://www.jiqiren.ai)）
+- WorkBuddy 适配：田琳 (Lynn)
+
+---
+
+## 许可证
+
+本项目仅供学习与交流使用。
