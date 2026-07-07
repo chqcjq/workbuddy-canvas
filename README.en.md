@@ -22,10 +22,9 @@ Canvas data is persisted per page under the user project directory's `canvas/` f
 
 ### AI Image Generation
 - **Text-to-image dialog**: Triggered from the bottom toolbar "✨ Text-to-Image" or "✨ Generate" when an AI image holder is selected; supports multiple candidates (1–4) for selection.
-- **Three generation models** (switch via dropdown):
-  - **Banana (banana pro)**: `aspect_ratio` enum (auto / 1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9), `image_size` defaults to 4K.
+- **Two generation models** (switch via dropdown):
+  - **Banana**: Requests the pro model by default (Gemini `gemini-3-pro-image-preview`, via Duomi's `gemini/nano-banana`). `aspect_ratio` enum (auto / 1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9), `image_size` defaults to 4K.
   - **Image2**: `size` enum (auto by model / 1024×1024 / 1792×1024 / 1024×1792 / custom width×height, must be divisible by 16 and within limits), `quality` defaults to high.
-  - **Nano Banana**: Integrated with Duomi's `gemini/nano-banana`, `model` defaults to `gemini-3-pro-image-preview`.
 - **Reference image (image-to-image)**: When exactly one image is selected on the canvas at submit time, it is passed as a reference to generate a new image related to the original.
 - **Auto annotation line**: A newly generated image from a reference is automatically connected back to the original with a **blue dashed arrow** (labeled "参考图" / reference) after insertion, clearly showing the derivation relationship; the line is a tldraw binding and follows when shapes move.
 

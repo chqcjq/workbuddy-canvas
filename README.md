@@ -20,10 +20,9 @@ Cowart 是一个基于 **tldraw** 的本地无限画布应用，运行在本地�
 
 ### AI 生图
 - **文生图对话框**：底部工具栏「✨文生图」或选中 AI 图片框时「✨生成」唤起，支持多候选（1–4 张）择优。
-- **三种生图模型**（下拉切换）：
-  - **Banana（banana pro）**：`aspect_ratio` 枚举（auto / 1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9），`image_size` 默认 4K。
+- **两种生图模型**（下拉切换）：
+  - **Banana**：默认请求 pro 模型（Gemini `gemini-3-pro-image-preview`，经 Duomi `gemini/nano-banana` 接入）。`aspect_ratio` 枚举（auto / 1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9），`image_size` 默认 4K。
   - **Image2**：`size` 枚举（auto 由模型决定 / 1024×1024 / 1792×1024 / 1024×1792 / 自定义宽×高，要求能被 16 整除且不超限），`quality` 默认 high。
-  - **Nano Banana**：接入 Duomi 的 `gemini/nano-banana`，`model` 默认 `gemini-3-pro-image-preview`。
 - **参考图（图生图）**：提交时若画布恰好选中 1 张图片，会作为参考图传入，生成与原图相关的新图。
 - **自动标注线**：用参考图生成的新图，落图后会自动画一条**蓝色虚线箭头**连回原图（带「参考图」标签），清晰体现衍生关系；连线为 tldraw 绑定，移动图形会跟随。
 
