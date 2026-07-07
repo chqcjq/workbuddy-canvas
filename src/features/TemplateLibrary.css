@@ -1,0 +1,133 @@
+.cowart-tpl-btn {
+  position: fixed;
+  top: 64px;
+  left: 12px;
+  z-index: 300;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--tl-color-text-1);
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: var(--tl-radius-2);
+  box-shadow: 0 2px 8px rgb(15 23 42 / 8%);
+  cursor: pointer;
+  user-select: none;
+}
+
+.cowart-tpl-btn:hover {
+  border-color: var(--tl-color-primary);
+}
+
+.cowart-tpl-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(15 23 42 / 35%);
+}
+
+.cowart-tpl-modal {
+  width: 460px;
+  max-width: calc(100vw - 32px);
+  max-height: 86vh;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: var(--tl-radius-2);
+  box-shadow: 0 16px 40px rgb(15 23 42 / 22%);
+  padding: 16px;
+}
+
+.cowart-tpl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.cowart-tpl-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--tl-color-text-1);
+}
+
+.cowart-tpl-close {
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  color: var(--tl-color-text-1);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.cowart-tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.cowart-tpl-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 84px;
+  padding: 12px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: var(--tl-radius-2);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.cowart-tpl-card:hover {
+  border-color: var(--tl-color-primary);
+  box-shadow: 0 4px 14px rgb(15 23 42 / 10%);
+}
+
+.cowart-tpl-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tl-color-text-1);
+}
+
+.cowart-tpl-card-desc {
+  font-size: 12px;
+  color: var(--tl-color-text-2, #64748b);
+  line-height: 1.4;
+}
+
+.cowart-tpl-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.cowart-tpl-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tl-color-text-2, #64748b);
+  margin-bottom: 12px;
+}
+
+.cowart-tpl-group {
+  margin-bottom: 14px;
+}
+
+.cowart-tpl-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tl-color-primary, #4338ca);
+  margin-bottom: 8px;
+}
+
+.cowart-tpl-card-name .cowart-tpl-upload-tag {
+  font-size: 11px;
+}

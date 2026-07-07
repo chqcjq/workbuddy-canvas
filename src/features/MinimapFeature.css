@@ -1,0 +1,51 @@
+.cowart-mm-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 300;
+  width: 196px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: var(--tl-radius-2, 6px);
+  box-shadow: 0 16px 40px rgb(15 23 42 / 22%);
+  font-family: inherit;
+  color: var(--tl-color-text-1);
+  overflow: hidden;
+}
+
+.cowart-mm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.cowart-mm-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cowart-mm-toggle {
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--tl-color-text-1);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--tl-radius-2, 6px);
+}
+
+.cowart-mm-toggle:hover {
+  background: #f1f5f9;
+}
+
+.cowart-mm-canvas {
+  display: block;
+  margin: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  cursor: crosshair;
+}
