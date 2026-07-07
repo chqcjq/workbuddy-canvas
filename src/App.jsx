@@ -47,6 +47,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import annotationToolIconRaw from './assets/tool-comment.svg?raw'
 import CowartFeatures from './features/index.jsx'
+import {
+  enqueueGenerationTask,
+  setQueueExecutor,
+  setQueueInserter,
+  TaskQueuePanel
+} from './features/TaskQueue.jsx'
 
 const CANVAS_ENDPOINT = '/api/canvas'
 const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
@@ -818,12 +824,9 @@ function CowartRegenerateButton() {
   const editor = useEditor()
   const [isOpen, setIsOpen] = useState(false)
   const [prompt, setPrompt] = useState('')
-  // generating: null | { startTime, promptText, refShapeId }
-  const [generating, setGenerating] = useState(null)
   const [error, setError] = useState(null)
   const [count, setCount] = useState(1)
   const [gen, setGen] = useState(() => defaultGenState(getStoredImageProvider()))
-  const [candidates, setCandidates] = useState(null)
 
   const selectedImage = useValue(
     'selected-image-shape',
@@ -838,104 +841,51 @@ function CowartRegenerateButton() {
     [editor]
   )
 
-  // Timer: re-render every second while generating to update elapsed counter
-  useEffect(() => {
-    if (!generating || generating.done) return
-    const timer = setInterval(() => setGenerating((prev) => prev && !prev.done ? { ...prev } : prev), 1000)
-    return () => clearInterval(timer)
-  }, [generating?.startTime, generating?.done])
-
-  // Fire-and-forget: close modal → generate in background → auto-insert when done
+  // Submit to the shared generation queue (fire-and-forget, shown in panel)
   const handleRegenerate = useCallback(() => {
-    if (!selectedImage || !prompt.trim() || generating) return
+    if (!selectedImage || !prompt.trim()) return
 
     const refShape = selectedImage.shape
     const refAssetSrc = selectedImage.asset?.props?.src ?? null
     const promptText = prompt.trim()
-    const refShapeId = refShape.id
+    const provider = getStoredImageProvider()
+    const providerLabel = IMAGE_PROVIDER_OPTIONS.find((o) => o.value === provider)?.label || provider
+    const genParams = buildGenParams(provider, gen)
+    const pageId = editor.getCurrentPageId()
 
-    // Close modal immediately, show progress on button
-    setIsOpen(false)
+    const res = enqueueGenerationTask({
+      type: 'image',
+      prompt: promptText,
+      provider,
+      providerLabel,
+      genParams,
+      referenceAssetSrc: refAssetSrc,
+      referenceShapeId: refShape.id,
+      anchorShapeId: null,
+      count,
+      pageId
+    })
+
+    if (!res.ok) {
+      setError(res.error)
+      return
+    }
     setError(null)
-    setGenerating({ startTime: Date.now(), promptText, refShapeId })
-
-    // Background task — do NOT await, let it run freely
-    ;(async () => {
-      try {
-        const config = getStoredImageApiConfig()
-        const cosConfig = getStoredCosConfig()
-        const provider = getStoredImageProvider()
-        const currentPageId = editor.getCurrentPageId()
-
-        const response = await fetch('/api/regenerate', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            prompt: promptText,
-            referenceAssetSrc: refAssetSrc,
-            apiBaseUrl: config.apiBaseUrl,
-            apiKey: config.apiKey,
-            provider,
-            pageId: currentPageId,
-            genParams: buildGenParams(provider, gen),
-            cos: cosConfig.secretId && cosConfig.secretKey ? cosConfig : null,
-            count
-          })
-        })
-
-        const result = await response.json()
-        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`)
-
-        // Multi-candidate: let the user pick the best one.
-        if (result.candidates && result.candidates.length > 1) {
-          setCandidates(result.candidates)
-          setGenerating(null)
-          return
-        }
-
-        insertRegeneratedCandidate(editor, result, refShape, promptText)
-
-        // Brief success flash then clear
-        setGenerating({ done: true, ok: true })
-        setTimeout(() => setGenerating(null), 2000)
-      } catch (err) {
-        setError(err.message)
-        setGenerating({ done: true, ok: false, error: err.message })
-        setTimeout(() => setGenerating(null), 5000)
-      }
-    })()
-  }, [selectedImage, prompt, gen, editor, generating])
+    setIsOpen(false)
+  }, [selectedImage, prompt, gen, editor, count])
 
   if (!selectedImage) return null
-
-  const isGenerating = generating && !generating.done
-  const elapsed = isGenerating ? Math.floor((Date.now() - generating.startTime) / 1000) : 0
 
   return (
     <div className="cowart-regenerate">
       <button
-        className={`cowart-regenerate-button${isGenerating ? ' cowart-regenerating' : ''}`}
+        className="cowart-regenerate-button"
         onClick={() => { setIsOpen(true); setError(null); setPrompt(''); setGen(defaultGenState(getStoredImageProvider())) }}
-        title={isGenerating ? `生成中... (${elapsed}s)` : "用选中图片作为参考，重新生成"}
+        title="用选中图片作为参考，重新生成（可批量加入队列）"
         type="button"
       >
-        <span>🔄 {isGenerating ? `${elapsed}s` : '重生成'}</span>
+        <span>🔄 重生成</span>
       </button>
-      {/* Non-blocking progress indicator — floats near button */}
-      {isGenerating ? createPortal(
-        <div className="cowart-generating-toast" role="status">
-          <span className="cowart-generating-toast-spinner" />
-          <span>AI 生成中… ({elapsed}s)</span>
-        </div>,
-        document.body
-      ) : null}
-      {/* Brief result toast */}
-      {generating?.done ? createPortal(
-        <div className={`cowart-result-toast ${generating.ok ? 'cowart-result-ok' : 'cowart-result-err'}`} role="alert">
-          {generating.ok ? '✅ 图片已插入画布' : `❌ ${generating.error || '生成失败'}`}
-        </div>,
-        document.body
-      ) : null}
       {isOpen ? createPortal(
         <div className="cowart-regenerate-modal-overlay" onClick={() => setIsOpen(false)}>
           <div className="cowart-regenerate-modal" onClick={(e) => e.stopPropagation()} role="dialog">
@@ -972,46 +922,20 @@ function CowartRegenerateButton() {
                 <div className="cowart-regenerate-error">{error}</div>
               ) : null}
             </div>
-            <div className="cowart-regenerate-modal-footer">
-              <button onClick={() => setIsOpen(false)} type="button">
-                取消
-              </button>
-              <button
-                data-primary="true"
-                onClick={handleRegenerate}
-                type="button"
-                disabled={!prompt.trim() || !!generating}
-              >
-                {generating ? '已提交…' : '生成'}
-              </button>
-            </div>
+          <div className="cowart-regenerate-modal-footer">
+            <button onClick={() => setIsOpen(false)} type="button">
+              取消
+            </button>
+            <button
+              data-primary="true"
+              onClick={handleRegenerate}
+              type="button"
+              disabled={!prompt.trim()}
+              title="加入生成队列（最多 10 个）"
+            >
+              加入队列
+            </button>
           </div>
-        </div>,
-        document.body
-      ) : null}
-      {candidates ? createPortal(
-        <div className="cowart-candidates-overlay" onClick={() => setCandidates(null)}>
-          <div className="cowart-candidates-modal" onClick={(e) => e.stopPropagation()} role="dialog">
-            <div className="cowart-candidates-header">
-              <span>选择一张满意的图</span>
-              <button className="cowart-textgen-close" onClick={() => setCandidates(null)}>×</button>
-            </div>
-            <div className="cowart-candidates-grid">
-              {candidates.map((c, i) => (
-                <button
-                  key={i}
-                  className="cowart-candidate-card"
-                  onClick={() => {
-                    insertRegeneratedCandidate(editor, c, selectedImage.shape, prompt.trim())
-                    setCandidates(null)
-                  }}
-                  type="button"
-                >
-                  <img src={c.src} alt={`候选 ${i + 1}`} />
-                  <span>候选 {i + 1}</span>
-                </button>
-              ))}
-            </div>
           </div>
         </div>,
         document.body
@@ -1451,16 +1375,80 @@ function insertRegeneratedCandidate(editor, result, refShape, promptText) {
   connectReferenceArrow(editor, refShape.id, shapeId)
 }
 
+// Bridges the in-memory generation queue to the canvas: provides the executor
+// (network request + auto-insert) and inserter (chosen candidate) used by the
+// queue store. Lives in App.jsx so it can call the module-level insert helpers
+// directly without creating a circular import.
+function CowartQueueBridge() {
+  const editor = useEditor()
+
+  useEffect(() => {
+    setQueueExecutor(async (task) => {
+      try {
+        const config = getStoredImageApiConfig()
+        const cosConfig = getStoredCosConfig()
+        const response = await fetch('/api/regenerate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            prompt: task.prompt,
+            referenceAssetSrc: task.referenceAssetSrc,
+            apiBaseUrl: config.apiBaseUrl,
+            apiKey: config.apiKey,
+            provider: task.provider,
+            pageId: task.pageId,
+            genParams: task.genParams,
+            cos: cosConfig.secretId && cosConfig.secretKey ? cosConfig : null,
+            count: task.count
+          })
+        })
+        const result = await response.json()
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`)
+
+        if (result.candidates && result.candidates.length > 1) {
+          return { ok: true, candidates: result.candidates }
+        }
+
+        await insertQueueResult(editor, task, result)
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err.message || '生成失败' }
+      }
+    })
+
+    setQueueInserter((task, candidate) => {
+      insertQueueResult(editor, task, candidate)
+    })
+
+    return () => {
+      setQueueExecutor(null)
+      setQueueInserter(null)
+    }
+  }, [editor])
+
+  return null
+}
+
+// Shared insert logic for both executor result and chosen candidate.
+async function insertQueueResult(editor, task, result) {
+  if (task.type === 'image' && task.referenceShapeId) {
+    const refShape = editor.getShape(task.referenceShapeId)
+    if (refShape) {
+      insertRegeneratedCandidate(editor, result, refShape, task.prompt)
+      return
+    }
+  }
+  await insertGeneratedImageFromResult(editor, result, task.anchorShapeId, task.prompt, task.referenceShapeId)
+}
+
 function CowartTextToImageDialog() {
   const editor = useEditor()
   const [open, setOpen] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [gen, setGen] = useState(() => defaultGenState(getStoredImageProvider()))
   const [anchorShapeId, setAnchorShapeId] = useState(null)
-  const [generating, setGenerating] = useState(null)
   const [error, setError] = useState(null)
   const [count, setCount] = useState(1)
-  const [candidates, setCandidates] = useState(null)
   const [templateName, setTemplateName] = useState(null)
   const [templateNeedsRef, setTemplateNeedsRef] = useState(false)
   const openGuardRef = useRef(false)
@@ -1486,12 +1474,6 @@ function CowartTextToImageDialog() {
     return () => window.removeEventListener(TEXTGEN_OPEN_EVENT, handler)
   }, [])
 
-  useEffect(() => {
-    if (!generating || generating.done) return
-    const timer = setInterval(() => setGenerating((prev) => (prev && !prev.done ? { ...prev } : prev)), 1000)
-    return () => clearInterval(timer)
-  }, [generating?.startTime, generating?.done])
-
   // Track whether a single image shape is selected (used as reference image hint)
   const hasRefImage = useValue(
     'textgen-ref-image',
@@ -1505,7 +1487,7 @@ function CowartTextToImageDialog() {
   )
 
   const handleGenerate = useCallback(() => {
-    if (!prompt.trim() || generating) return
+    if (!prompt.trim()) return
     const promptText = prompt.trim()
     const anchorId = anchorShapeId
 
@@ -1523,56 +1505,31 @@ function CowartTextToImageDialog() {
       }
     }
 
-    setOpen(false)
+    const provider = getStoredImageProvider()
+    const providerLabel = IMAGE_PROVIDER_OPTIONS.find((o) => o.value === provider)?.label || provider
+    const genParams = buildGenParams(provider, gen)
+    const pageId = editor.getCurrentPageId()
+
     setError(null)
-    setGenerating({ startTime: Date.now(), promptText, anchorShapeId: anchorId })
+    const res = enqueueGenerationTask({
+      type: referenceShapeId ? 'image' : 'text',
+      prompt: promptText,
+      provider,
+      providerLabel,
+      genParams,
+      referenceAssetSrc,
+      referenceShapeId,
+      anchorShapeId: anchorId,
+      count,
+      pageId
+    })
 
-    ;(async () => {
-      try {
-        const config = getStoredImageApiConfig()
-        const cosConfig = getStoredCosConfig()
-        const provider = getStoredImageProvider()
-        const currentPageId = editor.getCurrentPageId()
-
-        const response = await fetch('/api/regenerate', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            prompt: promptText,
-            referenceAssetSrc,
-            apiBaseUrl: config.apiBaseUrl,
-            apiKey: config.apiKey,
-            provider,
-            pageId: currentPageId,
-            genParams: buildGenParams(provider, gen),
-            cos: cosConfig.secretId && cosConfig.secretKey ? cosConfig : null,
-            count
-          })
-        })
-
-        const result = await response.json()
-        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`)
-
-        // Multi-candidate: let the user pick the best one.
-        if (result.candidates && result.candidates.length > 1) {
-          setCandidates(result.candidates)
-          setGenerating(null)
-          return
-        }
-
-        await insertGeneratedImageFromResult(editor, result, anchorId, promptText, referenceShapeId)
-        setGenerating({ done: true, ok: true })
-        setTimeout(() => setGenerating(null), 2000)
-      } catch (err) {
-        setError(err.message)
-        setGenerating({ done: true, ok: false, error: err.message })
-        setTimeout(() => setGenerating(null), 5000)
-      }
-    })()
-  }, [prompt, gen, anchorShapeId, editor, generating])
-
-  const isGenerating = generating && !generating.done
-  const elapsed = isGenerating ? Math.floor((Date.now() - generating.startTime) / 1000) : 0
+    if (!res.ok) {
+      setError(res.error)
+      return
+    }
+    setOpen(false)
+  }, [prompt, gen, anchorShapeId, editor, count])
 
   return (
     <>
@@ -1633,50 +1590,11 @@ function CowartTextToImageDialog() {
                 data-primary="true"
                 onClick={handleGenerate}
                 type="button"
-                disabled={!prompt.trim() || !!generating}
+                disabled={!prompt.trim()}
+                title="加入生成队列（最多 10 个）"
               >
-                {generating ? '已提交…' : '生成'}
+                加入队列
               </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      ) : null}
-      {isGenerating ? createPortal(
-        <div className="cowart-generating-toast" role="status">
-          <span className="cowart-generating-toast-spinner" />
-          <span>AI 生成中… ({elapsed}s)</span>
-        </div>,
-        document.body
-      ) : null}
-      {generating?.done ? createPortal(
-        <div className={`cowart-result-toast ${generating.ok ? 'cowart-result-ok' : 'cowart-result-err'}`} role="alert">
-          {generating.ok ? '✅ 图片已插入画布' : `❌ ${generating.error || '生成失败'}`}
-        </div>,
-        document.body
-      ) : null}
-      {candidates ? createPortal(
-        <div className="cowart-candidates-overlay" onClick={() => setCandidates(null)}>
-          <div className="cowart-candidates-modal" onClick={(e) => e.stopPropagation()} role="dialog">
-            <div className="cowart-candidates-header">
-              <span>选择一张满意的图</span>
-              <button className="cowart-textgen-close" onClick={() => setCandidates(null)}>×</button>
-            </div>
-            <div className="cowart-candidates-grid">
-              {candidates.map((c, i) => (
-                <button
-                  key={i}
-                  className="cowart-candidate-card"
-                  onClick={() => {
-                    insertGeneratedImageFromResult(editor, c, anchorShapeId, prompt.trim(), referenceShapeId)
-                    setCandidates(null)
-                  }}
-                  type="button"
-                >
-                  <img src={c.src} alt={`候选 ${i + 1}`} />
-                  <span>候选 {i + 1}</span>
-                </button>
-              ))}
             </div>
           </div>
         </div>,
@@ -2357,6 +2275,8 @@ export default function App() {
       >
         <CowartTextToImageDialog />
         <CowartEmptyState />
+        <CowartQueueBridge />
+        <TaskQueuePanel />
         <CowartFeatures />
       </Tldraw>
     </main>
