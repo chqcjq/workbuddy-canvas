@@ -555,8 +555,9 @@ function canvasStoragePlugin() {
         try {
           if (req.method === 'GET') {
             try {
+              const viewState = await readJsonFile(viewStateFile)
               sendJson(res, 200, {
-                viewState: await readJsonFile(viewStateFile),
+                viewState,
                 path: viewStateFile
               })
             } catch (error) {
@@ -572,7 +573,19 @@ function canvasStoragePlugin() {
                 })
                 return
               }
-              throw error
+              // 文件损坏/JSON 解析失败时回退默认空状态，避免画布因非关键数据而无法加载
+              console.error('[cowart] view-state 读取失败，已回退默认:', error.message)
+              sendJson(res, 200, {
+                viewState: {
+                  version: 1,
+                  currentPageId: null,
+                  camera: { x: 0, y: 0, z: 1 },
+                  updatedAt: null
+                },
+                path: viewStateFile,
+                recovered: true
+              })
+              return
             }
             return
           }
