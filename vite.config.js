@@ -613,14 +613,15 @@ function canvasStoragePlugin() {
 
       // Generate a single image (submit task -> poll -> download).
       // Reused for both single and multi-candidate generation.
-      async function generateOnce({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, cos, pageId }) {
+      async function generateOnce({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, cos, pageId, image2Path }) {
         const headers = {
           authorization: apiKey,
           'content-type': 'application/json'
         }
 
         async function trySubmit(withRef, withSize = true) {
-          const submitPath = '/v1/images/generations?async=true'
+          const basePath = image2Path && typeof image2Path === 'string' ? image2Path : '/v1/images/generations'
+          const submitPath = basePath.includes('?') ? `${basePath}&async=true` : `${basePath}?async=true`
           const submitBody = {
             model: 'gpt-image-2',
             prompt,
@@ -785,8 +786,9 @@ function canvasStoragePlugin() {
         return null
       }
 
-      async function generateNanoBanana({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, pageId, model, genParams }) {
-        const endpoint = `${baseUrl}/api/gemini/nano-banana`
+      async function generateNanoBanana({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, pageId, model, genParams, bananaPath }) {
+        const nanoPath = bananaPath && typeof bananaPath === 'string' ? bananaPath : '/api/gemini/nano-banana'
+        const endpoint = `${baseUrl}${nanoPath}`
         const headers = {
           authorization: apiKey,
           'content-type': 'application/json'
@@ -903,7 +905,7 @@ function canvasStoragePlugin() {
 
         try {
           const body = JSON.parse(await readRequestBody(req))
-          const { prompt, referenceAssetSrc, apiBaseUrl, image2ApiBaseUrl, bananaApiBaseUrl, apiKey, provider, pageId, size, cos, count, model, genParams } = body
+          const { prompt, referenceAssetSrc, apiBaseUrl, image2Path, bananaPath, apiKey, provider, pageId, size, cos, count, model, genParams } = body
 
           if (!prompt || typeof prompt !== 'string') {
             sendJson(res, 400, { error: 'prompt is required.' })
@@ -914,9 +916,8 @@ function canvasStoragePlugin() {
             return
           }
 
-          // Per-provider base URL (backward-compat: fall back to the legacy apiBaseUrl).
-          const img2Base = ((image2ApiBaseUrl || apiBaseUrl || 'https://duomiapi.com') + '').trim().replace(/\/+$/, '')
-          const bananaBase = ((bananaApiBaseUrl || apiBaseUrl || 'https://duomiapi.com') + '').trim().replace(/\/+$/, '')
+          // Shared API base URL; per-model endpoint paths are appended by the generators.
+          const sharedBase = ((apiBaseUrl || 'https://duomiapi.com') + '').trim().replace(/\/+$/, '')
 
           let referenceUrl = null
           let referenceDataUri = null
@@ -970,8 +971,8 @@ function canvasStoragePlugin() {
           const candidates = await Promise.all(
             Array.from({ length: n }, () =>
               useNano
-                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey, baseUrl: bananaBase, cos, pageId, model, genParams })
-                : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey, baseUrl: img2Base, cos, pageId })
+                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey, baseUrl: sharedBase, bananaPath, cos, pageId, model, genParams })
+                : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey, baseUrl: sharedBase, image2Path, cos, pageId })
             )
           )
           const primary = candidates[0]

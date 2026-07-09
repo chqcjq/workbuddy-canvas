@@ -79,10 +79,10 @@ const IMAGE_PROVIDER_OPTIONS = [
   { id: IMAGE_PROVIDER_BANANA, label: 'Banana' }
 ]
 const DEFAULT_IMAGE_API_BASE_URL = 'https://duomiapi.com'
-// Per-provider base URLs — users can point Image2 and Banana at different
-// aggregators. Both default to the same Duomi endpoint for backward compat.
-const DEFAULT_IMAGE2_API_BASE_URL = 'https://duomiapi.com'
-const DEFAULT_BANANA_API_BASE_URL = 'https://duomiapi.com'
+// Per-model endpoint paths (appended to the shared API base URL).
+// Users can customize these to match different aggregators' route layouts.
+const DEFAULT_IMAGE2_PATH = '/v1/images/generations'
+const DEFAULT_BANANA_PATH = '/api/gemini/nano-banana'
 const ANNOTATION_TOOL_ID = 'cowart-annotation'
 const ANNOTATION_TOOL_LABEL = '标注'
 const ANNOTATION_DEFAULT_COLOR = 'red'
@@ -174,35 +174,39 @@ function setStoredImageProvider(provider) {
   }
 }
 
+function normalizeApiPath(value, fallback) {
+  if (typeof value !== 'string' || !value.trim()) return fallback
+  const path = value.trim()
+  return path.startsWith('/') ? path : `/${path}`
+}
+
 function getStoredImageApiConfig() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(IMAGE_API_CONFIG_STORAGE_KEY) ?? '{}')
-    // Backward-compat: the old single apiBaseUrl feeds both per-provider URLs.
+    // Backward-compat: prefer the new apiBaseUrl; fall back to legacy per-provider URLs.
     const legacyBase =
-      typeof parsed.apiBaseUrl === 'string' && parsed.apiBaseUrl.trim()
-        ? parsed.apiBaseUrl.trim().replace(/\/+$/, '')
-        : null
-    const image2ApiBaseUrl =
       (typeof parsed.image2ApiBaseUrl === 'string' && parsed.image2ApiBaseUrl.trim()
         ? parsed.image2ApiBaseUrl.trim().replace(/\/+$/, '')
-        : null) || legacyBase || DEFAULT_IMAGE2_API_BASE_URL
-    const bananaApiBaseUrl =
+        : null) ||
       (typeof parsed.bananaApiBaseUrl === 'string' && parsed.bananaApiBaseUrl.trim()
         ? parsed.bananaApiBaseUrl.trim().replace(/\/+$/, '')
-        : null) || legacyBase || DEFAULT_BANANA_API_BASE_URL
+        : null)
+    const apiBaseUrl =
+      (typeof parsed.apiBaseUrl === 'string' && parsed.apiBaseUrl.trim()
+        ? parsed.apiBaseUrl.trim().replace(/\/+$/, '')
+        : null) || legacyBase || DEFAULT_IMAGE_API_BASE_URL
     return {
-      image2ApiBaseUrl,
-      bananaApiBaseUrl,
-      apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : '',
-      // Alias kept for any legacy call sites.
-      apiBaseUrl: image2ApiBaseUrl
+      apiBaseUrl,
+      image2Path: normalizeApiPath(parsed.image2Path, DEFAULT_IMAGE2_PATH),
+      bananaPath: normalizeApiPath(parsed.bananaPath, DEFAULT_BANANA_PATH),
+      apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : ''
     }
   } catch {
     return {
-      image2ApiBaseUrl: DEFAULT_IMAGE2_API_BASE_URL,
-      bananaApiBaseUrl: DEFAULT_BANANA_API_BASE_URL,
-      apiKey: '',
-      apiBaseUrl: DEFAULT_IMAGE_API_BASE_URL
+      apiBaseUrl: DEFAULT_IMAGE_API_BASE_URL,
+      image2Path: DEFAULT_IMAGE2_PATH,
+      bananaPath: DEFAULT_BANANA_PATH,
+      apiKey: ''
     }
   }
 }
@@ -211,8 +215,9 @@ function setStoredImageApiConfig(config) {
   window.localStorage.setItem(
     IMAGE_API_CONFIG_STORAGE_KEY,
     JSON.stringify({
-      image2ApiBaseUrl: (config.image2ApiBaseUrl || DEFAULT_IMAGE2_API_BASE_URL).trim().replace(/\/+$/, ''),
-      bananaApiBaseUrl: (config.bananaApiBaseUrl || DEFAULT_BANANA_API_BASE_URL).trim().replace(/\/+$/, ''),
+      apiBaseUrl: (config.apiBaseUrl || DEFAULT_IMAGE_API_BASE_URL).trim().replace(/\/+$/, ''),
+      image2Path: normalizeApiPath(config.image2Path, DEFAULT_IMAGE2_PATH),
+      bananaPath: normalizeApiPath(config.bananaPath, DEFAULT_BANANA_PATH),
       apiKey: config.apiKey || ''
     })
   )
@@ -753,8 +758,9 @@ function CowartImageProviderSelector() {
 
 function CowartImageApiConfigButton() {
   const [isOpen, setIsOpen] = useState(false)
-  const [image2ApiBaseUrl, setImage2ApiBaseUrl] = useState(DEFAULT_IMAGE2_API_BASE_URL)
-  const [bananaApiBaseUrl, setBananaApiBaseUrl] = useState(DEFAULT_BANANA_API_BASE_URL)
+  const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_IMAGE_API_BASE_URL)
+  const [image2Path, setImage2Path] = useState(DEFAULT_IMAGE2_PATH)
+  const [bananaPath, setBananaPath] = useState(DEFAULT_BANANA_PATH)
   const [apiKey, setApiKey] = useState('')
   const [cosSecretId, setCosSecretId] = useState('')
   const [cosSecretKey, setCosSecretKey] = useState('')
@@ -764,8 +770,9 @@ function CowartImageApiConfigButton() {
 
   useEffect(() => {
     const config = getStoredImageApiConfig()
-    setImage2ApiBaseUrl(config.image2ApiBaseUrl)
-    setBananaApiBaseUrl(config.bananaApiBaseUrl)
+    setApiBaseUrl(config.apiBaseUrl)
+    setImage2Path(config.image2Path)
+    setBananaPath(config.bananaPath)
     setApiKey(config.apiKey)
     const cos = getStoredCosConfig()
     setCosSecretId(cos.secretId)
@@ -776,10 +783,10 @@ function CowartImageApiConfigButton() {
   }, [isOpen])
 
   const saveConfig = useCallback(() => {
-    setStoredImageApiConfig({ image2ApiBaseUrl, bananaApiBaseUrl, apiKey })
+    setStoredImageApiConfig({ apiBaseUrl, image2Path, bananaPath, apiKey })
     setStoredCosConfig({ secretId: cosSecretId, secretKey: cosSecretKey, bucket: cosBucket, region: cosRegion, domain: cosDomain })
     setIsOpen(false)
-  }, [image2ApiBaseUrl, bananaApiBaseUrl, apiKey, cosSecretId, cosSecretKey, cosBucket, cosRegion, cosDomain])
+  }, [apiBaseUrl, image2Path, bananaPath, apiKey, cosSecretId, cosSecretKey, cosBucket, cosRegion, cosDomain])
 
   return (
     <div className="cowart-api-config">
@@ -795,25 +802,36 @@ function CowartImageApiConfigButton() {
         <div className="cowart-api-config-popover" role="dialog" aria-label="API 与图床配置">
           <div className="cowart-api-config-section-title">AI 生图 API</div>
           <label className="cowart-api-config-field">
-            <span>Image2 接口地址</span>
+            <span>API 请求 URL</span>
             <input
               autoComplete="off"
-              onChange={(event) => setImage2ApiBaseUrl(event.target.value)}
-              placeholder={DEFAULT_IMAGE2_API_BASE_URL}
+              onChange={(event) => setApiBaseUrl(event.target.value)}
+              placeholder={DEFAULT_IMAGE_API_BASE_URL}
               spellCheck={false}
               type="url"
-              value={image2ApiBaseUrl}
+              value={apiBaseUrl}
             />
           </label>
           <label className="cowart-api-config-field">
-            <span>Banana Pro 请求地址</span>
+            <span>Image2 URL 参数</span>
             <input
               autoComplete="off"
-              onChange={(event) => setBananaApiBaseUrl(event.target.value)}
-              placeholder={DEFAULT_BANANA_API_BASE_URL}
+              onChange={(event) => setImage2Path(event.target.value)}
+              placeholder={DEFAULT_IMAGE2_PATH}
               spellCheck={false}
-              type="url"
-              value={bananaApiBaseUrl}
+              type="text"
+              value={image2Path}
+            />
+          </label>
+          <label className="cowart-api-config-field">
+            <span>Banana Pro URL 参数</span>
+            <input
+              autoComplete="off"
+              onChange={(event) => setBananaPath(event.target.value)}
+              placeholder={DEFAULT_BANANA_PATH}
+              spellCheck={false}
+              type="text"
+              value={bananaPath}
             />
           </label>
           <label className="cowart-api-config-field">
@@ -1443,9 +1461,9 @@ function CowartQueueBridge() {
           body: JSON.stringify({
             prompt: task.prompt,
             referenceAssetSrc: task.referenceAssetSrc,
-            apiBaseUrl: config.image2ApiBaseUrl,
-            image2ApiBaseUrl: config.image2ApiBaseUrl,
-            bananaApiBaseUrl: config.bananaApiBaseUrl,
+            apiBaseUrl: config.apiBaseUrl,
+            image2Path: config.image2Path,
+            bananaPath: config.bananaPath,
             apiKey: config.apiKey,
             provider: task.provider,
             pageId: task.pageId,
