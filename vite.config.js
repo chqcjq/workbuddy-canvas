@@ -340,7 +340,9 @@ async function readPageSnapshots() {
       const snapshot = await readJsonFile(filePath)
       if (isSnapshot(snapshot)) snapshots.push({ filePath, snapshot })
     } catch (error) {
-      if (error.code !== 'ENOENT') throw error
+      if (error.code === 'ENOENT') continue
+      // 单页快照损坏（如 JSON 被截断/全空字节）不应拖垮整张画布：告警并跳过该页
+      console.warn(`[cowart] 跳过损坏的页面快照 ${filePath}：${error?.message || error}`)
     }
   }
   return snapshots
@@ -375,7 +377,9 @@ async function loadCanvasSnapshot() {
     if (error.code === 'ENOENT') {
       return { snapshot: null, path: canvasPagesDir, storage: 'empty' }
     }
-    throw error
+    // 旧版单文件损坏：回退空快照而非 500，避免画布整体无法加载（与 view-state 兜底一致）
+    console.warn(`[cowart] 旧版画布文件损坏，已回退为空画布：${error?.message || error}`)
+    return { snapshot: null, path: canvasPagesDir, storage: 'empty' }
   }
 }
 
@@ -911,13 +915,31 @@ function canvasStoragePlugin() {
             sendJson(res, 400, { error: 'prompt is required.' })
             return
           }
-          if (!apiKey || typeof apiKey !== 'string') {
-            sendJson(res, 400, { error: 'apiKey is required.' })
+          // 生图需要 API Key，来源优先级：
+          // ① 用户在「配置」填入的 Duomi Key（优先）；
+          // ② 环境注入的图像 Key（WIKE_API_KEY / DUOMI_API_KEY / COWART_IMAGE_API_KEY，部分部署环境会注入）。
+          // 二者都没有时，给用户清晰可操作的提示（不再误称"WorkBuddy 自有生图免配置"——wike.cc 同样需要有效 Key）。
+          const hasUserKey = apiKey && typeof apiKey === 'string' && apiKey.trim().length > 0
+          const envImageKey = (process.env.WIKE_API_KEY || process.env.DUOMI_API_KEY || process.env.COWART_IMAGE_API_KEY || '').trim()
+          const effectiveApiKey = hasUserKey ? apiKey.trim() : envImageKey
+          const effectiveBaseUrl = (hasUserKey
+            ? ((apiBaseUrl || 'https://duomiapi.com') + '')
+            : 'https://api.wike.cc'
+          ).trim().replace(/\/+$/, '')
+
+          if (!effectiveApiKey) {
+            sendJson(res, 400, {
+              error:
+                '生图需要一个 Duomi（多米）API Key。\n' +
+                '① 打开底部「配置」填入你的 Key（仅存本机浏览器，不上传）；\n' +
+                '② 或直接让我（WorkBuddy 助手）帮你生图——把需求发给我即可，无需配置。\n' +
+                '获取 Key：https://duomiapi.com'
+            })
             return
           }
 
           // Shared API base URL; per-model endpoint paths are appended by the generators.
-          const sharedBase = ((apiBaseUrl || 'https://duomiapi.com') + '').trim().replace(/\/+$/, '')
+          const sharedBase = effectiveBaseUrl
 
           let referenceUrl = null
           let referenceDataUri = null
@@ -971,8 +993,8 @@ function canvasStoragePlugin() {
           const candidates = await Promise.all(
             Array.from({ length: n }, () =>
               useNano
-                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey, baseUrl: sharedBase, bananaPath, cos, pageId, model, genParams })
-                : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey, baseUrl: sharedBase, image2Path, cos, pageId })
+                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey: effectiveApiKey, baseUrl: sharedBase, bananaPath, cos, pageId, model, genParams })
+                : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey: effectiveApiKey, baseUrl: sharedBase, image2Path, cos, pageId })
             )
           )
           const primary = candidates[0]

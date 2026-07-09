@@ -144,7 +144,7 @@ export default function VersionHistory() {
         onClick={() => setOpen((v) => !v)}
         title="版本历史"
       >
-        🕑 历史
+        🕑 版本历史
       </button>
 
       {open && (

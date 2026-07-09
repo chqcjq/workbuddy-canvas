@@ -43,7 +43,7 @@ import {
 } from 'tldraw'
 import { AllSelection } from '@tiptap/pm/state'
 import 'tldraw/tldraw.css'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, Component } from 'react'
 import { createPortal } from 'react-dom'
 import annotationToolIconRaw from './assets/tool-comment.svg?raw'
 import CowartFeatures from './features/index.jsx'
@@ -54,6 +54,26 @@ import {
   setQueueInserterAll,
   TaskQueuePanel
 } from './features/TaskQueue.jsx'
+
+// 捕获自定义浮层（历史/文生图/导出/队列等）的渲染错误，防止单个面板崩溃导致整画布白屏
+class CowartErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false }
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+  componentDidCatch(error, info) {
+    console.error('[cowart] 浮层渲染错误已隔离：', error, info)
+  }
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback || null
+    }
+    return this.props.children
+  }
+}
 
 const CANVAS_ENDPOINT = '/api/canvas'
 const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
@@ -212,15 +232,19 @@ function getStoredImageApiConfig() {
 }
 
 function setStoredImageApiConfig(config) {
-  window.localStorage.setItem(
-    IMAGE_API_CONFIG_STORAGE_KEY,
-    JSON.stringify({
-      apiBaseUrl: (config.apiBaseUrl || DEFAULT_IMAGE_API_BASE_URL).trim().replace(/\/+$/, ''),
-      image2Path: normalizeApiPath(config.image2Path, DEFAULT_IMAGE2_PATH),
-      bananaPath: normalizeApiPath(config.bananaPath, DEFAULT_BANANA_PATH),
-      apiKey: config.apiKey || ''
-    })
-  )
+  try {
+    window.localStorage.setItem(
+      IMAGE_API_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        apiBaseUrl: (config.apiBaseUrl || DEFAULT_IMAGE_API_BASE_URL).trim().replace(/\/+$/, ''),
+        image2Path: normalizeApiPath(config.image2Path, DEFAULT_IMAGE2_PATH),
+        bananaPath: normalizeApiPath(config.bananaPath, DEFAULT_BANANA_PATH),
+        apiKey: config.apiKey || ''
+      })
+    )
+  } catch {
+    // 配额满 / 隐私模式：静默失败，当前会话仍可用内存值
+  }
   window.dispatchEvent(new CustomEvent('cowart-image-api-config-change'))
 }
 
@@ -240,16 +264,20 @@ function getStoredCosConfig() {
 }
 
 function setStoredCosConfig(config) {
-  window.localStorage.setItem(
-    COS_CONFIG_STORAGE_KEY,
-    JSON.stringify({
-      secretId: config.secretId || '',
-      secretKey: config.secretKey || '',
-      bucket: config.bucket || COS_DEFAULT_BUCKET,
-      region: config.region || COS_DEFAULT_REGION,
-      domain: (config.domain || COS_DEFAULT_DOMAIN).trim().replace(/\/+$/, '')
-    })
-  )
+  try {
+    window.localStorage.setItem(
+      COS_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        secretId: config.secretId || '',
+        secretKey: config.secretKey || '',
+        bucket: config.bucket || COS_DEFAULT_BUCKET,
+        region: config.region || COS_DEFAULT_REGION,
+        domain: (config.domain || COS_DEFAULT_DOMAIN).trim().replace(/\/+$/, '')
+      })
+    )
+  } catch {
+    // 配额满 / 隐私模式：静默失败，当前会话仍可用内存值
+  }
   window.dispatchEvent(new CustomEvent('cowart-image-api-config-change'))
 }
 
@@ -756,6 +784,96 @@ function CowartImageProviderSelector() {
   )
 }
 
+// ---- 生图历史（本地留存，用于复用与同参数迭代）----
+const GEN_HISTORY_KEY = 'cowart-gen-history'
+const GEN_HISTORY_MAX = 50
+
+function getGenerationHistory() {
+  try {
+    const raw = localStorage.getItem(GEN_HISTORY_KEY)
+    const list = raw ? JSON.parse(raw) : []
+    return Array.isArray(list) ? list : []
+  } catch {
+    return []
+  }
+}
+
+function recordGenerationToHistory(entry) {
+  try {
+    let list = getGenerationHistory()
+    list.unshift({
+      id: `gen_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      ts: Date.now(),
+      ...entry
+    })
+    while (list.length > GEN_HISTORY_MAX) list.pop()
+    const put = () => {
+      try {
+        localStorage.setItem(GEN_HISTORY_KEY, JSON.stringify(list))
+        return true
+      } catch {
+        return false
+      }
+    }
+    if (put()) {
+      window.dispatchEvent(new Event('cowart:gen-history-changed'))
+      return
+    }
+    // 配额满：逐次丢弃最旧条目重试，避免历史撑爆 localStorage 影响其他存储
+    while (list.length > 1) {
+      list.pop()
+      if (put()) {
+        window.dispatchEvent(new Event('cowart:gen-history-changed'))
+        return
+      }
+    }
+    // 仅剩当前条目仍写不进（极端隐私模式 / 配额被他处占满）：放弃
+  } catch {
+    /* 忽略配额 / 隐私模式错误 */
+  }
+}
+
+function clearGenerationHistory() {
+  try { localStorage.removeItem(GEN_HISTORY_KEY) } catch {}
+}
+
+// 仅为本地 data: URL 生成小缩略图（远程 URL 不读像素，避免 canvas 跨域污染）
+function makeThumb(src, maxW = 240) {
+  return new Promise((resolve) => {
+    if (!src || typeof src !== 'string' || !src.startsWith('data:')) return resolve(null)
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxW / img.width)
+        const w = Math.max(1, Math.round(img.width * scale))
+        const h = Math.max(1, Math.round(img.height * scale))
+        const c = document.createElement('canvas')
+        c.width = w
+        c.height = h
+        c.getContext('2d').drawImage(img, 0, 0, w, h)
+        resolve(c.toDataURL('image/jpeg', 0.72))
+      } catch {
+        resolve(null)
+      }
+    }
+    img.onerror = () => resolve(null)
+    img.src = src
+  })
+}
+
+async function recordGenHistoryAsync(entry) {
+  const thumb = await makeThumb(entry.src)
+  recordGenerationToHistory({ ...entry, thumb })
+}
+
+function timeAgo(ts) {
+  const d = Date.now() - ts
+  if (d < 60000) return '刚刚'
+  if (d < 3600000) return `${Math.floor(d / 60000)} 分钟前`
+  if (d < 86400000) return `${Math.floor(d / 3600000)} 小时前`
+  return `${Math.floor(d / 86400000)} 天前`
+}
+
 function CowartImageApiConfigButton() {
   const [isOpen, setIsOpen] = useState(false)
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_IMAGE_API_BASE_URL)
@@ -767,6 +885,8 @@ function CowartImageApiConfigButton() {
   const [cosBucket, setCosBucket] = useState(COS_DEFAULT_BUCKET)
   const [cosRegion, setCosRegion] = useState(COS_DEFAULT_REGION)
   const [cosDomain, setCosDomain] = useState(COS_DEFAULT_DOMAIN)
+  // COS 图床默认折叠：仅图生图需要上传参考图时才展开填写（去配置化）
+  const [cosOpen, setCosOpen] = useState(false)
 
   useEffect(() => {
     const config = getStoredImageApiConfig()
@@ -791,15 +911,18 @@ function CowartImageApiConfigButton() {
   return (
     <div className="cowart-api-config">
       <button
-        className="cowart-api-config-button"
+        className="cowart-api-config-button cowart-api-config-button--ghost"
         onClick={() => setIsOpen((value) => !value)}
-        title="配置 API 与图床"
+        title="配置生图 API 与图床（生图需填入 Duomi API Key）"
         type="button"
       >
         <span>配置</span>
       </button>
       {isOpen ? createPortal(
         <div className="cowart-api-config-popover" role="dialog" aria-label="API 与图床配置">
+          <div className="cowart-api-config-note">
+            生图需要填入 <b>Duomi API Key</b>（仅存本机浏览器）。Key 留空时，画布编辑/OCR/标注/导出等本地功能照常可用；如需生图却没有 Key，可直接让 WorkBuddy 助手帮你生成。图床仅图生图需上传参考图时才填。
+          </div>
           <div className="cowart-api-config-section-title">AI 生图 API</div>
           <label className="cowart-api-config-field">
             <span>API 请求 URL</span>
@@ -845,62 +968,77 @@ function CowartImageApiConfigButton() {
               value={apiKey}
             />
           </label>
-          <div className="cowart-api-config-section-title">图床（腾讯 COS）</div>
-          <label className="cowart-api-config-field">
-            <span>SecretId</span>
-            <input
-              autoComplete="off"
-              onChange={(event) => setCosSecretId(event.target.value)}
-              placeholder="腾讯云 SecretId"
-              spellCheck={false}
-              type="text"
-              value={cosSecretId}
-            />
-          </label>
-          <label className="cowart-api-config-field">
-            <span>SecretKey</span>
-            <input
-              autoComplete="off"
-              onChange={(event) => setCosSecretKey(event.target.value)}
-              placeholder="腾讯云 SecretKey"
-              spellCheck={false}
-              type="password"
-              value={cosSecretKey}
-            />
-          </label>
-          <label className="cowart-api-config-field">
-            <span>Bucket（存储桶）</span>
-            <input
-              autoComplete="off"
-              onChange={(event) => setCosBucket(event.target.value)}
-              placeholder={COS_DEFAULT_BUCKET}
-              spellCheck={false}
-              type="text"
-              value={cosBucket}
-            />
-          </label>
-          <label className="cowart-api-config-field">
-            <span>Region（地域）</span>
-            <input
-              autoComplete="off"
-              onChange={(event) => setCosRegion(event.target.value)}
-              placeholder={COS_DEFAULT_REGION}
-              spellCheck={false}
-              type="text"
-              value={cosRegion}
-            />
-          </label>
-          <label className="cowart-api-config-field">
-            <span>Domain（访问域名）</span>
-            <input
-              autoComplete="off"
-              onChange={(event) => setCosDomain(event.target.value)}
-              placeholder={COS_DEFAULT_DOMAIN}
-              spellCheck={false}
-              type="url"
-              value={cosDomain}
-            />
-          </label>
+          <div className="cowart-api-config-section">
+            <button
+              className="cowart-api-config-section-head"
+              onClick={() => setCosOpen((value) => !value)}
+              type="button"
+            >
+              <span>图床（腾讯 COS）{cosOpen ? '▴' : '▾'}</span>
+              <span className="cowart-api-config-section-sub">仅图生图上传参考图时填写</span>
+            </button>
+            {cosOpen ? (
+              <>
+                <label className="cowart-api-config-field">
+                  <span>SecretId</span>
+                  <input
+                    autoComplete="off"
+                    onChange={(event) => setCosSecretId(event.target.value)}
+                    placeholder="腾讯云 SecretId"
+                    spellCheck={false}
+                    type="text"
+                    value={cosSecretId}
+                  />
+                </label>
+                <label className="cowart-api-config-field">
+                  <span>SecretKey</span>
+                  <input
+                    autoComplete="off"
+                    onChange={(event) => setCosSecretKey(event.target.value)}
+                    placeholder="腾讯云 SecretKey"
+                    spellCheck={false}
+                    type="password"
+                    value={cosSecretKey}
+                  />
+                </label>
+                <label className="cowart-api-config-field">
+                  <span>Bucket（存储桶）</span>
+                  <input
+                    autoComplete="off"
+                    onChange={(event) => setCosBucket(event.target.value)}
+                    placeholder={COS_DEFAULT_BUCKET}
+                    spellCheck={false}
+                    type="text"
+                    value={cosBucket}
+                  />
+                </label>
+                <label className="cowart-api-config-field">
+                  <span>Region（地域）</span>
+                  <input
+                    autoComplete="off"
+                    onChange={(event) => setCosRegion(event.target.value)}
+                    placeholder={COS_DEFAULT_REGION}
+                    spellCheck={false}
+                    type="text"
+                    value={cosRegion}
+                  />
+                </label>
+                <label className="cowart-api-config-field">
+                  <span>Domain（访问域名）</span>
+                  <input
+                    autoComplete="off"
+                    onChange={(event) => setCosDomain(event.target.value)}
+                    placeholder={COS_DEFAULT_DOMAIN}
+                    spellCheck={false}
+                    type="url"
+                    value={cosDomain}
+                  />
+                </label>
+              </>
+            ) : (
+              <div className="cowart-api-config-fields-hint">已折叠。需要上传参考图做图生图时，点开填写即可。</div>
+            )}
+          </div>
           <div className="cowart-api-config-actions">
             <button onClick={() => setIsOpen(false)} type="button">
               取消
@@ -1055,10 +1193,10 @@ const GEN_MODEL_SCHEMAS = {
     label: 'Image2',
     sizeMode: 'size',
     sizeOptions: [
-      { value: 'auto', label: 'auto（模型自动决定）' },
-      { value: '1024x1024', label: '1024×1024 正方形' },
-      { value: '1792x1024', label: '1792×1024 横版' },
-      { value: '1024x1792', label: '1024×1792 竖版' },
+      { value: 'auto', label: '自动 · 模型决定（推荐）' },
+      { value: '1024x1024', label: '1024×1024 · 1:1 方形（头像 / Logo / 图标）' },
+      { value: '1792x1024', label: '1792×1024 · 16:9 横版（PPT / 横幅 / 壁纸）' },
+      { value: '1024x1792', label: '1024×1792 · 9:16 竖版（海报 / 手机屏 / 视频封面）' },
       { value: '__custom__', label: '自定义宽×高（16 整除）' }
     ],
     defaultSize: 'auto'
@@ -1071,23 +1209,23 @@ const GEN_MODEL_SCHEMAS = {
     // full aspect-ratio set and the 4K image-size selector (formerly the
     // separate "Banana Pro" option).
     aspectOptions: [
-      { value: 'auto', label: 'auto（自适应）' },
-      { value: '1:1', label: '1:1 正方形' },
-      { value: '2:3', label: '2:3 竖版' },
-      { value: '3:2', label: '3:2 横版' },
-      { value: '3:4', label: '3:4' },
-      { value: '4:3', label: '4:3' },
-      { value: '4:5', label: '4:5' },
-      { value: '5:4', label: '5:4' },
-      { value: '9:16', label: '9:16 竖版' },
-      { value: '16:9', label: '16:9 横版' },
-      { value: '21:9', label: '21:9 宽屏' }
+      { value: 'auto', label: '自动 · 自适应（推荐）' },
+      { value: '1:1', label: '1:1 方形（头像 / Logo / 朋友圈）' },
+      { value: '2:3', label: '2:3 竖版（人像 / 杂志）' },
+      { value: '3:2', label: '3:2 横版（单反照片 / 横幅）' },
+      { value: '3:4', label: '3:4 竖版（人像 / 海报）' },
+      { value: '4:3', label: '4:3 横版（传统相册 / PPT）' },
+      { value: '4:5', label: '4:5 竖版（小红书 / Instagram）' },
+      { value: '5:4', label: '5:4 横版（展示 Banner）' },
+      { value: '9:16', label: '9:16 竖版（海报 / 手机屏 / 视频封面）' },
+      { value: '16:9', label: '16:9 横版（PPT 宽屏 / 横幅 / 壁纸）' },
+      { value: '21:9', label: '21:9 超宽屏（电影感 / 长横幅）' }
     ],
     defaultAspect: 'auto',
     imageSizeOptions: [
-      { value: '1K', label: '1K' },
-      { value: '2K', label: '2K' },
-      { value: '4K', label: '4K（默认）' }
+      { value: '1K', label: '1K · 快 / 省额度' },
+      { value: '2K', label: '2K · 清晰' },
+      { value: '4K', label: '4K · 最清晰（默认）' }
     ],
     defaultImageSize: '4K'
   }
@@ -1479,10 +1617,26 @@ function CowartQueueBridge() {
           // Insert all candidates now; return them so the queue panel can show
           // the "已插入 N 张" preview.
           await insertAllQueueCandidates(editor, task, result.candidates)
+          result.candidates.forEach((cand) => {
+            recordGenHistoryAsync({
+              provider: task.provider,
+              prompt: task.prompt || '',
+              genState: task.genState || null,
+              genParams: task.genParams || null,
+              src: cand.src || null
+            }).catch(() => {})
+          })
           return { ok: true, candidates: result.candidates }
         }
 
         await insertQueueResult(editor, task, result)
+        recordGenHistoryAsync({
+          provider: task.provider,
+          prompt: task.prompt || '',
+          genState: task.genState || null,
+          genParams: task.genParams || null,
+          src: result.src || (result.candidates && result.candidates[0] && result.candidates[0].src) || null
+        }).catch(() => {})
         return { ok: true }
       } catch (err) {
         if (err.name === 'AbortError') return { ok: false, error: '请求超时（6 分钟未响应），请重试' }
@@ -1667,6 +1821,99 @@ async function insertAllQueueCandidates(editor, task, candidates) {
   }
 }
 
+function CowartGenHistoryPanel() {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState(() => getGenerationHistory())
+
+  useEffect(() => {
+    const refresh = () => setItems(getGenerationHistory())
+    window.addEventListener('cowart:gen-history-changed', refresh)
+    return () => window.removeEventListener('cowart:gen-history-changed', refresh)
+  }, [])
+
+  const reuse = useCallback((entry) => {
+    window.dispatchEvent(
+      new CustomEvent(TEXTGEN_OPEN_EVENT, {
+        detail: { prompt: entry.prompt, genState: entry.genState || null }
+      })
+    )
+  }, [])
+
+  const remove = useCallback((id) => {
+    try {
+      const list = getGenerationHistory().filter((it) => it.id !== id)
+      localStorage.setItem(GEN_HISTORY_KEY, JSON.stringify(list))
+      window.dispatchEvent(new Event('cowart:gen-history-changed'))
+    } catch {}
+  }, [])
+
+  const clearAll = useCallback(() => {
+    if (!window.confirm('确定清空全部生图历史？此操作不可恢复。')) return
+    clearGenerationHistory()
+  }, [])
+
+  if (!open) {
+    return createPortal(
+      <button
+        className="cowart-history-fab"
+        onClick={() => setOpen(true)}
+        title="生图历史（复用 / 同参数迭代）"
+        type="button"
+      >
+        🕘 生图历史{items.length > 0 ? ` · ${items.length}` : ''}
+      </button>,
+      document.body
+    )
+  }
+
+  return createPortal(
+    <div className="cowart-history-panel" role="dialog" aria-label="生图历史">
+      <div className="cowart-history-head">
+        <span>生图历史{items.length > 0 ? `（${items.length}）` : ''}</span>
+        <div className="cowart-history-head-actions">
+          {items.length > 0 && (
+            <button onClick={clearAll} type="button" className="cowart-history-link">清空</button>
+          )}
+          <button onClick={() => setOpen(false)} type="button" className="cowart-history-link">收起</button>
+        </div>
+      </div>
+      <div className="cowart-history-list">
+        {items.length === 0 ? (
+          <div className="cowart-history-empty">还没有生成记录。生一张图，就会自动出现在这里，方便复用。</div>
+        ) : (
+          items.map((it) => (
+            <div className="cowart-history-item" key={it.id}>
+              <div className="cowart-history-thumb">
+                {it.thumb ? (
+                  <img src={it.thumb} alt="" />
+                ) : it.src ? (
+                  <img src={it.src} alt="" />
+                ) : (
+                  <div className="cowart-history-thumb-empty">无图</div>
+                )}
+              </div>
+              <div className="cowart-history-meta">
+                <div className="cowart-history-prompt" title={it.prompt}>{it.prompt || '（空 prompt）'}</div>
+                <div className="cowart-history-sub">
+                  <span className="cowart-history-provider">
+                    {it.provider === 'banana' || it.provider === 'nano' ? 'Banana' : 'Image2'}
+                  </span>
+                  <span>{timeAgo(it.ts)}</span>
+                </div>
+                <div className="cowart-history-actions">
+                  <button onClick={() => reuse(it)} type="button">复用</button>
+                  <button onClick={() => remove(it.id)} type="button" className="cowart-history-del">删除</button>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 function CowartTextToImageDialog() {
   const editor = useEditor()
   const [open, setOpen] = useState(false)
@@ -1689,7 +1936,11 @@ function CowartTextToImageDialog() {
       setTemplateName(detail.templateName || null)
       setTemplateNeedsRef(!!detail.needUpload)
       setUploadedRef(null)
-      setGen(defaultGenState(getStoredImageProvider()))
+      setGen(
+        detail.genState && typeof detail.genState === 'object'
+          ? { ...defaultGenState(getStoredImageProvider()), ...detail.genState }
+          : defaultGenState(getStoredImageProvider())
+      )
       setError(null)
       setOpen(true)
       // Block the overlay's click-to-close for a short window so the very
@@ -1803,6 +2054,7 @@ function CowartTextToImageDialog() {
       provider,
       providerLabel,
       genParams,
+      genState: gen,
       referenceAssetSrc,
       referenceShapeId,
       anchorShapeId: anchorId,
@@ -1827,6 +2079,15 @@ function CowartTextToImageDialog() {
               <button className="cowart-textgen-close" onClick={() => setOpen(false)}>×</button>
             </div>
             <div className="cowart-textgen-modal-body">
+              {(() => {
+                const cfg = getStoredImageApiConfig()
+                const keySet = !!(cfg && cfg.apiKey && cfg.apiKey.trim())
+                return keySet ? null : (
+                  <div className="cowart-textgen-builtin-hint">
+                    🔑 未配置 Duomi API Key。点底部「配置」填入即可生图；或直接把需求发给 WorkBuddy 助手，由我帮你生图并落到画布（无需配置）。
+                  </div>
+                )
+              })()}
               {templateName ? (
                 <div className="cowart-textgen-template-chip">
                   <span>📋 模板：{templateName}</span>
@@ -2000,6 +2261,15 @@ function CowartHolderGenerateButton() {
   )
 }
 
+function loadImageEl(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('图片加载失败'))
+    img.src = src
+  })
+}
+
 function CowartExportButton() {
   const editor = useEditor()
   const [open, setOpen] = useState(false)
@@ -2060,7 +2330,20 @@ function CowartExportButton() {
         return
       }
       const { blob } = await editor.toImage(ids, { format: 'png', background: true })
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+      } catch {
+        // 剪贴板不可用（非安全上下文 / 权限被拒）：降级为下载 PNG，保证产物仍可交付
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `cowart-${Date.now()}.png`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        alert('剪贴板不可用，已改为下载 PNG。')
+      }
       setTimeout(() => {}, 0)
     } catch (err) {
       console.error(err)
@@ -2069,6 +2352,74 @@ function CowartExportButton() {
       setBusy(false)
     }
   }, [editor, targetIds, closeMenu])
+
+  // 整页长图：把画布所有页面按内容拼接成一张长 PNG（白底，适合贴文档/发群）
+  const exportLongImage = useCallback(async () => {
+    closeMenu()
+    setBusy(true)
+    const originalPageId = editor.getCurrentPageId()
+    try {
+      const pages = editor.getPages()
+      const slices = []
+      let maxW = 0
+      for (const page of pages) {
+        try {
+          // 切换到目标页，确保 toImage 能渲染该页内容
+          editor.setCurrentPageId(page.id)
+          const ids = [...editor.getCurrentPageShapeIds()]
+          if (ids.length === 0) continue
+          const { blob } = await editor.toImage(ids, { format: 'png', background: true })
+          const url = URL.createObjectURL(blob)
+          try {
+            const img = await loadImageEl(url)
+            slices.push({ img, w: img.naturalWidth, h: img.naturalHeight })
+            maxW = Math.max(maxW, img.naturalWidth)
+          } finally {
+            URL.revokeObjectURL(url)
+          }
+        } catch (pageErr) {
+          // 单页导出失败不应中断整次长图导出：告警并跳过该页
+          console.warn(`[cowart] 长图导出跳过页面 ${page?.id}：`, pageErr)
+        }
+      }
+      if (slices.length === 0) {
+        alert('画布是空的，先画点东西吧～')
+        return
+      }
+      const gap = 24
+      const totalH = slices.reduce((sum, s) => sum + s.h, 0) + gap * (slices.length - 1)
+      const canvas = document.createElement('canvas')
+      canvas.width = maxW
+      canvas.height = totalH
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, maxW, totalH)
+      let y = 0
+      for (const s of slices) {
+        ctx.drawImage(s.img, 0, y)
+        y += s.h + gap
+      }
+      canvas.toBlob((out) => {
+        if (!out) {
+          alert('生成长图失败')
+          return
+        }
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(out)
+        a.download = `cowart-长图-${Date.now()}.png`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+      }, 'image/png')
+    } catch (err) {
+      console.error(err)
+      alert('导出长图失败：' + (err?.message || err))
+    } finally {
+      editor.setCurrentPageId(originalPageId)
+      setBusy(false)
+    }
+  }, [editor, closeMenu])
 
   return (
     <div className="cowart-export">
@@ -2091,9 +2442,10 @@ function CowartExportButton() {
             style={{ position: 'fixed', bottom: menuPos.bottom, left: menuPos.left }}
             onClick={(e) => e.stopPropagation()}
           >
+            <button onClick={copyImage} type="button">📋 复制为图片</button>
+            <button onClick={exportLongImage} type="button">🧾 整页长图 PNG</button>
             <button onClick={() => doExport('png')} type="button">🖼️ PNG 图片</button>
             <button onClick={() => doExport('svg')} type="button">📐 SVG 矢量</button>
-            <button onClick={copyImage} type="button">📋 复制为图片</button>
           </div>
         </>,
         document.body
@@ -2628,11 +2980,22 @@ export default function App() {
         components={cowartComponents}
         tools={[CowartAnnotationTool]}
       >
-        <CowartTextToImageDialog />
-        <CowartEmptyState />
+        <CowartErrorBoundary>
+          <CowartTextToImageDialog />
+        </CowartErrorBoundary>
+        <CowartErrorBoundary>
+          <CowartEmptyState />
+        </CowartErrorBoundary>
         <CowartQueueBridge />
-        <TaskQueuePanel />
-        <CowartFeatures />
+        <CowartErrorBoundary>
+          <TaskQueuePanel />
+        </CowartErrorBoundary>
+        <CowartErrorBoundary>
+          <CowartGenHistoryPanel />
+        </CowartErrorBoundary>
+        <CowartErrorBoundary>
+          <CowartFeatures />
+        </CowartErrorBoundary>
       </Tldraw>
     </main>
   )
