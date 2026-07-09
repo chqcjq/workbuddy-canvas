@@ -79,6 +79,10 @@ const IMAGE_PROVIDER_OPTIONS = [
   { id: IMAGE_PROVIDER_BANANA, label: 'Banana' }
 ]
 const DEFAULT_IMAGE_API_BASE_URL = 'https://duomiapi.com'
+// Per-provider base URLs — users can point Image2 and Banana at different
+// aggregators. Both default to the same Duomi endpoint for backward compat.
+const DEFAULT_IMAGE2_API_BASE_URL = 'https://duomiapi.com'
+const DEFAULT_BANANA_API_BASE_URL = 'https://duomiapi.com'
 const ANNOTATION_TOOL_ID = 'cowart-annotation'
 const ANNOTATION_TOOL_LABEL = '标注'
 const ANNOTATION_DEFAULT_COLOR = 'red'
@@ -173,15 +177,33 @@ function setStoredImageProvider(provider) {
 function getStoredImageApiConfig() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(IMAGE_API_CONFIG_STORAGE_KEY) ?? '{}')
+    // Backward-compat: the old single apiBaseUrl feeds both per-provider URLs.
+    const legacyBase =
+      typeof parsed.apiBaseUrl === 'string' && parsed.apiBaseUrl.trim()
+        ? parsed.apiBaseUrl.trim().replace(/\/+$/, '')
+        : null
+    const image2ApiBaseUrl =
+      (typeof parsed.image2ApiBaseUrl === 'string' && parsed.image2ApiBaseUrl.trim()
+        ? parsed.image2ApiBaseUrl.trim().replace(/\/+$/, '')
+        : null) || legacyBase || DEFAULT_IMAGE2_API_BASE_URL
+    const bananaApiBaseUrl =
+      (typeof parsed.bananaApiBaseUrl === 'string' && parsed.bananaApiBaseUrl.trim()
+        ? parsed.bananaApiBaseUrl.trim().replace(/\/+$/, '')
+        : null) || legacyBase || DEFAULT_BANANA_API_BASE_URL
     return {
-      apiBaseUrl:
-        typeof parsed.apiBaseUrl === 'string' && parsed.apiBaseUrl.trim()
-          ? parsed.apiBaseUrl.trim().replace(/\/+$/, '')
-          : DEFAULT_IMAGE_API_BASE_URL,
-      apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : ''
+      image2ApiBaseUrl,
+      bananaApiBaseUrl,
+      apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : '',
+      // Alias kept for any legacy call sites.
+      apiBaseUrl: image2ApiBaseUrl
     }
   } catch {
-    return { apiBaseUrl: DEFAULT_IMAGE_API_BASE_URL, apiKey: '' }
+    return {
+      image2ApiBaseUrl: DEFAULT_IMAGE2_API_BASE_URL,
+      bananaApiBaseUrl: DEFAULT_BANANA_API_BASE_URL,
+      apiKey: '',
+      apiBaseUrl: DEFAULT_IMAGE_API_BASE_URL
+    }
   }
 }
 
@@ -189,7 +211,8 @@ function setStoredImageApiConfig(config) {
   window.localStorage.setItem(
     IMAGE_API_CONFIG_STORAGE_KEY,
     JSON.stringify({
-      apiBaseUrl: (config.apiBaseUrl || DEFAULT_IMAGE_API_BASE_URL).trim().replace(/\/+$/, ''),
+      image2ApiBaseUrl: (config.image2ApiBaseUrl || DEFAULT_IMAGE2_API_BASE_URL).trim().replace(/\/+$/, ''),
+      bananaApiBaseUrl: (config.bananaApiBaseUrl || DEFAULT_BANANA_API_BASE_URL).trim().replace(/\/+$/, ''),
       apiKey: config.apiKey || ''
     })
   )
@@ -730,52 +753,71 @@ function CowartImageProviderSelector() {
 
 function CowartImageApiConfigButton() {
   const [isOpen, setIsOpen] = useState(false)
-  const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_IMAGE_API_BASE_URL)
+  const [image2ApiBaseUrl, setImage2ApiBaseUrl] = useState(DEFAULT_IMAGE2_API_BASE_URL)
+  const [bananaApiBaseUrl, setBananaApiBaseUrl] = useState(DEFAULT_BANANA_API_BASE_URL)
   const [apiKey, setApiKey] = useState('')
   const [cosSecretId, setCosSecretId] = useState('')
   const [cosSecretKey, setCosSecretKey] = useState('')
+  const [cosBucket, setCosBucket] = useState(COS_DEFAULT_BUCKET)
+  const [cosRegion, setCosRegion] = useState(COS_DEFAULT_REGION)
+  const [cosDomain, setCosDomain] = useState(COS_DEFAULT_DOMAIN)
 
   useEffect(() => {
     const config = getStoredImageApiConfig()
-    setApiBaseUrl(config.apiBaseUrl)
+    setImage2ApiBaseUrl(config.image2ApiBaseUrl)
+    setBananaApiBaseUrl(config.bananaApiBaseUrl)
     setApiKey(config.apiKey)
     const cos = getStoredCosConfig()
     setCosSecretId(cos.secretId)
     setCosSecretKey(cos.secretKey)
+    setCosBucket(cos.bucket)
+    setCosRegion(cos.region)
+    setCosDomain(cos.domain)
   }, [isOpen])
 
   const saveConfig = useCallback(() => {
-    setStoredImageApiConfig({ apiBaseUrl, apiKey })
-    setStoredCosConfig({ secretId: cosSecretId, secretKey: cosSecretKey })
+    setStoredImageApiConfig({ image2ApiBaseUrl, bananaApiBaseUrl, apiKey })
+    setStoredCosConfig({ secretId: cosSecretId, secretKey: cosSecretKey, bucket: cosBucket, region: cosRegion, domain: cosDomain })
     setIsOpen(false)
-  }, [apiBaseUrl, apiKey, cosSecretId, cosSecretKey])
+  }, [image2ApiBaseUrl, bananaApiBaseUrl, apiKey, cosSecretId, cosSecretKey, cosBucket, cosRegion, cosDomain])
 
   return (
     <div className="cowart-api-config">
       <button
         className="cowart-api-config-button"
         onClick={() => setIsOpen((value) => !value)}
-        title="Configure image API"
+        title="配置 API 与图床"
         type="button"
       >
-        <span>API</span>
+        <span>配置</span>
       </button>
       {isOpen ? createPortal(
-        <div className="cowart-api-config-popover" role="dialog" aria-label="Image API config">
-          <div className="cowart-api-config-section-title">多米 API</div>
+        <div className="cowart-api-config-popover" role="dialog" aria-label="API 与图床配置">
+          <div className="cowart-api-config-section-title">AI 生图 API</div>
           <label className="cowart-api-config-field">
-            <span>API URL</span>
+            <span>Image2 接口地址</span>
             <input
               autoComplete="off"
-              onChange={(event) => setApiBaseUrl(event.target.value)}
-              placeholder={DEFAULT_IMAGE_API_BASE_URL}
+              onChange={(event) => setImage2ApiBaseUrl(event.target.value)}
+              placeholder={DEFAULT_IMAGE2_API_BASE_URL}
               spellCheck={false}
               type="url"
-              value={apiBaseUrl}
+              value={image2ApiBaseUrl}
             />
           </label>
           <label className="cowart-api-config-field">
-            <span>API Key</span>
+            <span>Banana Pro 请求地址</span>
+            <input
+              autoComplete="off"
+              onChange={(event) => setBananaApiBaseUrl(event.target.value)}
+              placeholder={DEFAULT_BANANA_API_BASE_URL}
+              spellCheck={false}
+              type="url"
+              value={bananaApiBaseUrl}
+            />
+          </label>
+          <label className="cowart-api-config-field">
+            <span>API 密钥</span>
             <input
               autoComplete="off"
               onChange={(event) => setApiKey(event.target.value)}
@@ -785,7 +827,7 @@ function CowartImageApiConfigButton() {
               value={apiKey}
             />
           </label>
-          <div className="cowart-api-config-section-title">腾讯 COS（参考图上传）</div>
+          <div className="cowart-api-config-section-title">图床（腾讯 COS）</div>
           <label className="cowart-api-config-field">
             <span>SecretId</span>
             <input
@@ -808,12 +850,45 @@ function CowartImageApiConfigButton() {
               value={cosSecretKey}
             />
           </label>
+          <label className="cowart-api-config-field">
+            <span>Bucket（存储桶）</span>
+            <input
+              autoComplete="off"
+              onChange={(event) => setCosBucket(event.target.value)}
+              placeholder={COS_DEFAULT_BUCKET}
+              spellCheck={false}
+              type="text"
+              value={cosBucket}
+            />
+          </label>
+          <label className="cowart-api-config-field">
+            <span>Region（地域）</span>
+            <input
+              autoComplete="off"
+              onChange={(event) => setCosRegion(event.target.value)}
+              placeholder={COS_DEFAULT_REGION}
+              spellCheck={false}
+              type="text"
+              value={cosRegion}
+            />
+          </label>
+          <label className="cowart-api-config-field">
+            <span>Domain（访问域名）</span>
+            <input
+              autoComplete="off"
+              onChange={(event) => setCosDomain(event.target.value)}
+              placeholder={COS_DEFAULT_DOMAIN}
+              spellCheck={false}
+              type="url"
+              value={cosDomain}
+            />
+          </label>
           <div className="cowart-api-config-actions">
             <button onClick={() => setIsOpen(false)} type="button">
-              Cancel
+              取消
             </button>
             <button data-primary="true" onClick={saveConfig} type="button">
-              Save
+              保存
             </button>
           </div>
         </div>,
@@ -1356,16 +1431,21 @@ function CowartQueueBridge() {
 
   useEffect(() => {
     setQueueExecutor(async (task) => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 360000)
       try {
         const config = getStoredImageApiConfig()
         const cosConfig = getStoredCosConfig()
         const response = await fetch('/api/regenerate', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             prompt: task.prompt,
             referenceAssetSrc: task.referenceAssetSrc,
-            apiBaseUrl: config.apiBaseUrl,
+            apiBaseUrl: config.image2ApiBaseUrl,
+            image2ApiBaseUrl: config.image2ApiBaseUrl,
+            bananaApiBaseUrl: config.bananaApiBaseUrl,
             apiKey: config.apiKey,
             provider: task.provider,
             pageId: task.pageId,
@@ -1387,7 +1467,10 @@ function CowartQueueBridge() {
         await insertQueueResult(editor, task, result)
         return { ok: true }
       } catch (err) {
+        if (err.name === 'AbortError') return { ok: false, error: '请求超时（6 分钟未响应），请重试' }
         return { ok: false, error: err.message || '生成失败' }
+      } finally {
+        clearTimeout(timeoutId)
       }
     })
 
@@ -1761,7 +1844,28 @@ function CowartTextToImageDialog() {
                         reader.onload = () => {
                           const dataUrl = String(reader.result)
                           const img = new Image()
-                          img.onload = () => setUploadedRef({ src: dataUrl, name: file.name, w: img.naturalWidth || 512, h: img.naturalHeight || 512 })
+                          img.onload = () => {
+                            // 压缩到 ≤1024px（jpeg 0.85），避免大图 base64 过大引发 Failed to fetch
+                            const MAX = 1024
+                            let w = img.naturalWidth || 512
+                            let h = img.naturalHeight || 512
+                            if (w > MAX || h > MAX) {
+                              const scale = Math.min(MAX / w, MAX / h)
+                              w = Math.round(w * scale)
+                              h = Math.round(h * scale)
+                            }
+                            try {
+                              const canvas = document.createElement('canvas')
+                              canvas.width = w
+                              canvas.height = h
+                              const ctx = canvas.getContext('2d')
+                              ctx.drawImage(img, 0, 0, w, h)
+                              const compressed = canvas.toDataURL('image/jpeg', 0.85)
+                              setUploadedRef({ src: compressed, name: file.name, w, h })
+                            } catch {
+                              setUploadedRef({ src: dataUrl, name: file.name, w, h })
+                            }
+                          }
                           img.onerror = () => setUploadedRef({ src: dataUrl, name: file.name, w: 512, h: 512 })
                           img.src = dataUrl
                         }

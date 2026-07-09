@@ -642,7 +642,8 @@ function canvasStoragePlugin() {
               const resp = await fetch(`${bu}${submitPath}`, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify(submitBody)
+                body: JSON.stringify(submitBody),
+                signal: AbortSignal.timeout(60000)
               })
               const text = await resp.text()
               let parsed = null
@@ -695,7 +696,7 @@ function canvasStoragePlugin() {
         for (let attempt = 0; attempt < 120; attempt++) {
           await new Promise((r) => setTimeout(r, 2000))
           try {
-            const resp = await fetch(`${usedBaseUrl}${pollPath}`, { headers })
+            const resp = await fetch(`${usedBaseUrl}${pollPath}`, { headers, signal: AbortSignal.timeout(30000) })
             const text = await resp.text()
             if (!resp.ok) continue
             taskResult = text ? JSON.parse(text) : {}
@@ -722,7 +723,7 @@ function canvasStoragePlugin() {
         const imageUrl = images[0]?.url || images[0]?.image_url
         if (!imageUrl) throw new Error('图片 URL 为空。')
 
-        const imgResp = await fetch(imageUrl)
+        const imgResp = await fetch(imageUrl, { signal: AbortSignal.timeout(60000) })
         if (!imgResp.ok) throw new Error(`下载图片失败: ${imgResp.status}`)
         const imgBuffer = Buffer.from(await imgResp.arrayBuffer())
         const imgMimeType = imgResp.headers.get('content-type') || 'image/png'
@@ -807,7 +808,8 @@ function canvasStoragePlugin() {
         const resp = await fetch(endpoint, {
           method: 'POST',
           headers,
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(60000)
         })
         const text = await resp.text()
         if (!resp.ok) {
@@ -829,7 +831,7 @@ function canvasStoragePlugin() {
           for (let attempt = 0; attempt < 120; attempt++) {
             await new Promise((r) => setTimeout(r, 2000))
             try {
-              const pr = await fetch(`${baseUrl}${pollPath}`, { headers })
+              const pr = await fetch(`${baseUrl}${pollPath}`, { headers, signal: AbortSignal.timeout(30000) })
               const pt = await pr.text()
               if (!pr.ok) continue
               pollResult = pt ? JSON.parse(pt) : {}
@@ -853,7 +855,7 @@ function canvasStoragePlugin() {
         let buffer
         let mimeType
         if (imageObj.url) {
-          const imgResp = await fetch(imageObj.url)
+          const imgResp = await fetch(imageObj.url, { signal: AbortSignal.timeout(60000) })
           if (!imgResp.ok) throw new Error(`下载图片失败: ${imgResp.status}`)
           buffer = Buffer.from(await imgResp.arrayBuffer())
           mimeType = imgResp.headers.get('content-type') || 'image/png'
@@ -901,7 +903,7 @@ function canvasStoragePlugin() {
 
         try {
           const body = JSON.parse(await readRequestBody(req))
-          const { prompt, referenceAssetSrc, apiBaseUrl, apiKey, provider, pageId, size, cos, count, model, genParams } = body
+          const { prompt, referenceAssetSrc, apiBaseUrl, image2ApiBaseUrl, bananaApiBaseUrl, apiKey, provider, pageId, size, cos, count, model, genParams } = body
 
           if (!prompt || typeof prompt !== 'string') {
             sendJson(res, 400, { error: 'prompt is required.' })
@@ -912,7 +914,9 @@ function canvasStoragePlugin() {
             return
           }
 
-          const baseUrl = (apiBaseUrl || 'https://duomiapi.com').replace(/\/+$/, '')
+          // Per-provider base URL (backward-compat: fall back to the legacy apiBaseUrl).
+          const img2Base = ((image2ApiBaseUrl || apiBaseUrl || 'https://duomiapi.com') + '').trim().replace(/\/+$/, '')
+          const bananaBase = ((bananaApiBaseUrl || apiBaseUrl || 'https://duomiapi.com') + '').trim().replace(/\/+$/, '')
 
           let referenceUrl = null
           let referenceDataUri = null
@@ -966,8 +970,8 @@ function canvasStoragePlugin() {
           const candidates = await Promise.all(
             Array.from({ length: n }, () =>
               useNano
-                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey, baseUrl, cos, pageId, model, genParams })
-                : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey, baseUrl, cos, pageId })
+                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey, baseUrl: bananaBase, cos, pageId, model, genParams })
+                : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey, baseUrl: img2Base, cos, pageId })
             )
           )
           const primary = candidates[0]
