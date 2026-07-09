@@ -764,8 +764,17 @@ function canvasStoragePlugin() {
       // with a task id instead of an image, we poll /api/gemini/tasks/{id}.
       function extractNanoImage(parsed) {
         if (!parsed || typeof parsed !== 'object') return null
-        const arr = parsed.data || parsed.images
-        if (Array.isArray(arr) && arr.length) {
+        const data = parsed.data
+        const taskPayload = data && typeof data === 'object' && !Array.isArray(data) ? data : parsed
+        const nestedData = taskPayload?.data && typeof taskPayload.data === 'object' && !Array.isArray(taskPayload.data) ? taskPayload.data : null
+        // 兼容多种聚合器返回：嵌套 data.images / taskPayload.images / parsed.images / OpenAI 风格 data[]
+        const arr =
+          Array.isArray(nestedData?.images) ? nestedData.images
+          : Array.isArray(taskPayload?.images) ? taskPayload.images
+          : Array.isArray(parsed?.images) ? parsed.images
+          : Array.isArray(data) ? data
+          : null
+        if (arr && arr.length) {
           const item = arr[0]
           if (item && item.url) return { url: item.url }
           if (item && item.b64_json) return { b64: item.b64_json }
@@ -776,7 +785,7 @@ function canvasStoragePlugin() {
         if (parsed.image) return { url: parsed.image }
         if (parsed.b64_json) return { b64: parsed.b64_json }
         // Gemini-style candidates
-        const candidates = parsed.candidates
+        const candidates = parsed.candidates || taskPayload?.candidates || nestedData?.candidates
         if (Array.isArray(candidates)) {
           for (const c of candidates) {
             const parts = c?.content?.parts
@@ -791,15 +800,20 @@ function canvasStoragePlugin() {
       }
 
       async function generateNanoBanana({ prompt, referenceUrl, referenceDataUri, size, apiKey, baseUrl, pageId, model, genParams, bananaPath }) {
-        const nanoPath = bananaPath && typeof bananaPath === 'string' ? bananaPath : '/api/gemini/nano-banana'
-        const endpoint = `${baseUrl}${nanoPath}`
+        const nanoPath = bananaPath && typeof bananaPath === 'string' && bananaPath.trim() ? bananaPath.trim() : '/api/gemini/nano-banana'
+        // 图生图走 nano-banana-edit 端点 + image_urls（与 cowart MCP server 一致）；
+        // 文生图走 nano-banana。edit 路径在 query 前插入 -edit。
+        const isEdit = !!(referenceUrl || referenceDataUri)
+        const submitPath = isEdit ? nanoPath.replace(/(\?.*)?$/, (m, q) => `-edit${q || ''}`) : nanoPath
+        const endpoint = `${baseUrl}${submitPath}`
         const headers = {
           authorization: apiKey,
           'content-type': 'application/json'
         }
         const body = {
           model: model || 'gemini-3-pro-image-preview',
-          prompt
+          prompt,
+          oversea: false
         }
         if (size) body.size = size
         // Forward the per-model generation params (aspect_ratio / image_size).
@@ -808,8 +822,10 @@ function canvasStoragePlugin() {
           if (genParams.aspect_ratio && genParams.aspect_ratio !== 'auto') body.aspect_ratio = genParams.aspect_ratio
           if (genParams.image_size) body.image_size = genParams.image_size
         }
-        if (referenceUrl) body.image = [referenceUrl]
-        else if (referenceDataUri) body.image = [referenceDataUri]
+        if (isEdit) {
+          // edit 端点用 image_urls；URL 优先（配了 COS），无 COS 时回退 dataURI（尽力而为）
+          body.image_urls = [referenceUrl || referenceDataUri]
+        }
 
         const resp = await fetch(endpoint, {
           method: 'POST',
@@ -829,33 +845,50 @@ function canvasStoragePlugin() {
           throw new Error(`Nano Banana 返回非 JSON: ${text.slice(0, 400)}`)
         }
 
-        // Async fallback: endpoint returned a task id without an image yet.
-        const taskId = parsed?.id
-        if (taskId && !extractNanoImage(parsed)) {
-          const pollPath = `/api/gemini/tasks/${encodeURIComponent(taskId)}`
-          let pollResult = null
+        // nano-banana 为异步：返回 task id 后需轮询。轮询路径优先 MCP 风格
+        // /api/gemini/nano-banana/{id}，回退 /api/gemini/tasks/{id}，兼容历史。
+        const taskId = parsed?.id ?? parsed?.data?.task_id ?? parsed?.task_id
+        let pollResult = null
+        const needsPoll = !!(taskId && !extractNanoImage(parsed))
+        if (needsPoll) {
+          const idEnc = encodeURIComponent(taskId)
+          const pollPaths = [
+            `/api/gemini/nano-banana/${idEnc}`,
+            `/api/gemini/tasks/${idEnc}`
+          ]
           for (let attempt = 0; attempt < 120; attempt++) {
             await new Promise((r) => setTimeout(r, 2000))
-            try {
-              const pr = await fetch(`${baseUrl}${pollPath}`, { headers, signal: AbortSignal.timeout(30000) })
-              const pt = await pr.text()
-              if (!pr.ok) continue
-              pollResult = pt ? JSON.parse(pt) : {}
-            } catch {
-              continue
+            for (const pollPath of pollPaths) {
+              try {
+                const pr = await fetch(`${baseUrl}${pollPath}`, { headers, signal: AbortSignal.timeout(30000) })
+                if (!pr.ok) continue
+                const pt = await pr.text()
+                pollResult = pt ? JSON.parse(pt) : {}
+                break
+              } catch {
+                continue
+              }
             }
-            const st = pollResult?.state || pollResult?.status
+            if (!pollResult) continue
+            const st = pollResult?.state || pollResult?.status || pollResult?.data?.state || pollResult?.data?.status
             if (st === 'succeeded' || st === 'success' || st === 'completed') break
             if (st === 'error' || st === 'failed') {
-              throw new Error(`Nano Banana 任务失败: ${pollResult?.data?.description ?? pollResult?.msg ?? '未知错误'}`)
+              throw new Error(`Nano Banana 任务失败: ${pollResult?.data?.description ?? pollResult?.msg ?? pollResult?.message ?? '未知错误'}`)
             }
+            // 若本轮已能取到图，提前结束
+            if (extractNanoImage(pollResult)) break
           }
           if (pollResult) parsed = pollResult
         }
 
         const imageObj = extractNanoImage(parsed)
         if (!imageObj) {
-          throw new Error('Nano Banana 响应中未找到图片（期望 data[].url / b64_json / candidates[].inlineData）。')
+          // 进入过轮询却仍无图：多半是任务长时间未完成，报明确超时
+          if (needsPoll) {
+            const lastState = pollResult?.state || pollResult?.status || pollResult?.data?.state || pollResult?.data?.status || '未知'
+            throw new Error(`Nano Banana 生成超时（约 240 秒未完成），最后状态：${lastState}。可稍后重试。`)
+          }
+          throw new Error('Nano Banana 响应中未找到图片（期望 data[].url / b64_json / candidates[].inlineData）。原始返回: ' + text.slice(0, 200))
         }
 
         let buffer
@@ -990,13 +1023,24 @@ function canvasStoragePlugin() {
           // "banana" now requests the pro (Gemini) model by default; "nano"
           // is kept only for backward-compatibility with stored tasks.
           const useNano = provider === 'banana' || provider === 'nano'
-          const candidates = await Promise.all(
-            Array.from({ length: n }, () =>
-              useNano
-                ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey: effectiveApiKey, baseUrl: sharedBase, bananaPath, cos, pageId, model, genParams })
-                : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey: effectiveApiKey, baseUrl: sharedBase, image2Path, cos, pageId })
-            )
-          )
+          const taskFn = () =>
+            useNano
+              ? generateNanoBanana({ prompt, referenceUrl, referenceDataUri, apiKey: effectiveApiKey, baseUrl: sharedBase, bananaPath, cos, pageId, model, genParams })
+              : generateOnce({ prompt, referenceUrl, referenceDataUri, size: genParams?.size, apiKey: effectiveApiKey, baseUrl: sharedBase, image2Path, cos, pageId })
+          // 多候选用 allSettled 隔离：单张失败不拖累其余；全部失败才抛错，部分成功仍返回
+          const settled = await Promise.allSettled(Array.from({ length: n }, () => taskFn()))
+          const candidates = []
+          const errors = []
+          for (const r of settled) {
+            if (r.status === 'fulfilled') candidates.push(r.value)
+            else errors.push(r.reason instanceof Error ? r.reason.message : String(r.reason))
+          }
+          if (candidates.length === 0) {
+            throw new Error(errors[0] || '生成失败')
+          }
+          if (errors.length > 0) {
+            console.warn(`[cowart] ${errors.length}/${n} 候选生成失败：${errors.join(' | ')}`)
+          }
           const primary = candidates[0]
 
           sendJson(res, 200, {
